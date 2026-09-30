@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Kinopy's Second</title>
+  
+  <!-- PWA / iOS Settings -->
+  <link rel="manifest" href="manifest.json?v=20260918-2216">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Kinopy's Second">
+  <link rel="apple-touch-icon" href="assets/icon.png?v=20260918-2216">
+  <link rel="icon" href="assets/icon.png?v=20260918-2216">
+  <link rel="shortcut icon" href="favicon.ico?v=20260918-2216">
+  <meta name="theme-color" content="#FAF7F0">
+
+  <link rel="stylesheet" href="style.css?v=20260930-step43a">
+  <script>
+    // フェイルセーフな画面切り替え関数（HTMLロード直後から即時動作）
+    window.pwaOpenChat = function(e) {
+      if (e) {
+        if (e.target.closest && (e.target.closest('button') || e.target.closest('#mascot-task-bar') || e.target.closest('#mascot-mini-badge'))) return;
+        e.stopPropagation();
+      }
+      var m = document.getElementById('mascot-screen');
+      var c = document.getElementById('chat-panel-screen');
+      var snd = document.getElementById('btn-sound-toggle');
+      if (m) m.classList.add('hidden');
+      if (c) c.classList.remove('hidden');
+      if (snd) snd.style.display = 'none';
+      if (window.state) window.state.isPanelOpen = true;
+      var t = document.getElementById('chat-timeline');
+      if (t) t.scrollTop = t.scrollHeight;
+    };
+    window.pwaCloseChat = function(e) {
+      if (e) e.stopPropagation();
+      var m = document.getElementById('mascot-screen');
+      var c = document.getElementById('chat-panel-screen');
+      var snd = document.getElementById('btn-sound-toggle');
+      if (c) c.classList.add('hidden');
+      if (m) m.classList.remove('hidden');
+      if (snd) snd.style.display = 'flex';
+      if (window.state) window.state.isPanelOpen = false;
+    };
+    window.pwaToggleSimpleMode = function(e) {
+      if (e) {
+        if (e.target.closest && (e.target.closest('button') || e.target.closest('#mascot-task-bar') || e.target.closest('#mascot-mini-badge') || e.target.closest('#mascot-floating-bubble'))) return;
+        e.stopPropagation();
+      }
+      var m = document.getElementById('mascot-screen');
+      if (m) {
+        m.classList.toggle('simple-mode');
+        var isSimple = m.classList.contains('simple-mode');
+        localStorage.setItem('companion_simple_mode', isSimple);
+        if (window.state) window.state.isSimpleMode = isSimple;
+      }
+    };
+    window.pwaToggleScreen = function(e) {
+      if (e) e.stopPropagation();
+      var c = document.getElementById('chat-panel-screen');
+      if (c && !c.classList.contains('hidden')) {
+        window.pwaCloseChat(e);
+      } else {
+        window.pwaOpenChat(e);
+      }
+    };
+    window.pwaOpenSettings = function(e) {
+      if (e) e.stopPropagation();
+      var p = document.getElementById('settings-panel');
+      if (p) p.classList.remove('hidden');
+    };
+    window.pwaCloseSettings = function(e) {
+      if (e) e.stopPropagation();
+      var p = document.getElementById('settings-panel');
+      if (p) p.classList.add('hidden');
+    };
+    window.pwaToggleSound = function(e) {
+      if (e) e.stopPropagation();
+      if (window.toggleSound) {
+        window.toggleSound(e);
+      } else {
+        var enabled = localStorage.getItem('voice_enabled') === 'true';
+        localStorage.setItem('voice_enabled', (!enabled).toString());
+        var btn = document.getElementById('btn-sound-toggle');
+        if (btn) btn.textContent = !enabled ? '🔊' : '🔇';
+      }
+    };
+    window.pwaToggleAiMode = function(e) {
+      if (e) e.stopPropagation();
+      if (window.toggleAiMode) {
+        window.toggleAiMode(e);
+      } else {
+        var enabled = localStorage.getItem('gemini_enabled') !== 'false';
+        localStorage.setItem('gemini_enabled', (!enabled).toString());
+        var badge = document.getElementById('ai-mode-badge');
+        if (badge) {
+          badge.textContent = !enabled ? '✨ Gemini 連動' : '⚡ 内蔵モード';
+          badge.className = !enabled ? 'ai-mode-badge gemini-active' : 'ai-mode-badge';
+        }
+      }
+    };
+    window.pwaOpenKumapy = function(e) {
+      if (e) e.stopPropagation();
+      if (window.openKumapyInBrowser) {
+        window.openKumapyInBrowser();
+      } else {
+        var url = (localStorage.getItem('kumapy_webapp_url') || '').replace(/([?&])(key|k)=[^&#]*/gi, '$1');
+        if (url) window.open(url, '_blank');
+      }
+    };
+  </script>
+</head>
+<body>
+  <div class="app-container">
+    
+    <!-- 共通ヘッダー (常時表示・Vault共通仕様準拠) -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="avatar-wrapper" id="header-avatar-btn" onclick="window.pwaToggleScreen(event)" title="画面切り替え（タップでキャラ/チャット切替）">
+          <img src="assets/icon.jpg" alt="Kinopy's Second Logo" id="header-logo-img" class="app-logo">
+        </div>
+        <h1 class="app-title-h1">Kinopy's Second <span class="app-ver-badge">ver.1.0</span></h1>
+      </div>
+      <div class="header-actions">
+        <span id="ai-mode-badge" class="ai-mode-badge" onclick="window.pwaToggleAiMode(event)" title="クリックでGemini連動 ON/OFF 切替">⚡ 内蔵モード</span>
+        <button id="btn-sound-toggle" class="mini-icon-btn sound-toggle-btn" onclick="window.pwaToggleSound(event)" title="音声読み上げオン/オフ">🔊</button>
+        <button id="btn-settings-toggle" class="mini-icon-btn" onclick="window.pwaOpenSettings(event)" title="設定">⚙️</button>
+      </div>
+    </header>
+
+    <!-- A. キャラクター単体画面（初期表示・Mac版コンパクト状態同等） -->
+    <div id="mascot-screen" class="mascot-screen" onclick="window.pwaToggleSimpleMode(event)">
+      <div class="mascot-main-area" id="mascot-touch-area" onclick="window.pwaToggleSimpleMode(event)" title="タップでメッセージ・タスク表示切替">
+        <!-- 独り言・Kumapy予定通知用ミニ吹き出し（タップでチャットを開く） -->
+        <div class="floating-bubble hidden" id="mascot-floating-bubble" onclick="window.pwaOpenChat(event)" title="タップでチャットを開く">
+          <div class="floating-bubble-text" id="mascot-floating-bubble-text"></div>
+          <div class="floating-bubble-tail"></div>
+        </div>
+
+        <div class="mascot-avatar-container" onclick="window.pwaToggleSimpleMode(event)">
+          <div class="mascot-avatar-ring">
+            <img src="assets/01_normal.png" alt="Kinopy's Second" id="mascot-avatar-img" class="mascot-avatar-img">
+          </div>
+          <div class="mini-badge hidden" id="mascot-mini-badge" title="ドラッグで移動"></div>
+        </div>
+
+        <!-- 下部横長1行の予定・タスクステータス枠 -->
+        <a href="#" class="mascot-task-bar" id="mascot-task-bar" title="タップでKumapyを開く" style="text-decoration:none; color:inherit;" onclick="window.pwaOpenKumapy(event)">
+          <span class="char-task-icon" id="pwa-char-task-icon">🎯</span>
+          <span class="char-task-text" id="pwa-char-task-text">Kumapyを読み込み中...</span>
+        </a>
+      </div>
+    </div>
+
+    <!-- B. チャット画面（展開時表示） -->
+    <div id="chat-panel-screen" class="chat-panel-screen hidden">
+      <!-- 1. Kumapy 進行中タスク＆直近予定ステータスバー -->
+      <div class="kumapy-status-bar" id="kumapy-status-bar" title="タップでKumapyを開く">
+        <a href="#" class="kumapy-status-main" id="kumapy-status-main" style="text-decoration:none; color:inherit; display:flex; align-items:center; gap:6px; flex:1; overflow:hidden;" onclick="return false;">
+          <span class="kumapy-icon" id="kumapy-icon">🎯</span>
+          <span class="kumapy-text" id="kumapy-text">Kumapy連携を読み込み中...</span>
+        </a>
+        <button id="btn-kumapy-refresh" class="kumapy-refresh-btn" title="タスク更新">↻</button>
+      </div>
+
+      <!-- 3. チャット検索バー -->
+      <div id="chat-search-bar" class="chat-search-bar">
+        <input type="text" id="chat-search-input" placeholder="チャットを検索..." />
+        <span id="chat-search-count" class="chat-search-count">0/0</span>
+        <button id="btn-search-prev" class="mini-search-btn" title="前の一致">▲</button>
+        <button id="btn-search-next" class="mini-search-btn" title="次の一致">▼</button>
+      </div>
+
+      <!-- 4. LINE風チャットタイムライン -->
+      <main class="chat-thread-container" id="chat-container">
+        <div id="pull-to-refresh" class="pull-to-refresh">
+          <div class="ptr-content">
+            <span class="ptr-icon">🔄</span>
+            <span class="ptr-text">下に引っ張って更新</span>
+          </div>
+        </div>
+        <div class="chat-timeline" id="chat-timeline">
+          <!-- 過去ログ読み込みボタン & メッセージが動的に挿入されます -->
+        </div>
+        <div class="speech-status">
+          <span id="ai-status-indicator" class="ai-status-indicator hidden">✨ Gemini 思考中...</span>
+          <span id="speaking-indicator" class="speaking-indicator hidden">🔊 発話中...</span>
+          <span id="listening-indicator" class="listening-indicator hidden">🎙️ 音声聞き取り中...</span>
+          <span id="timer-badge" class="timer-badge hidden">⏱️ 15:00</span>
+          <span id="sync-alert-indicator" title="タップで再送" style="display:none; cursor:pointer; background:#FFF3E0; color:#E65100; border-radius:10px; padding:2px 8px; font-size:11px; font-weight:600;"></span>
+        </div>
+      </main>
+
+      <!-- 4.5. チャット画面内キャラクター表示エリア (タイムラインと入力欄の間) -->
+      <div class="chat-character-bar" id="chat-character-bar" onclick="window.pwaToggleScreen(event)" title="タップでキャラ全画面表示">
+        <div class="chat-char-avatar-ring">
+          <img src="assets/01_normal.png" alt="Kinopy's Second" id="chat-char-avatar-img" class="chat-char-avatar-img">
+        </div>
+      </div>
+
+      <!-- 5. クイックアイコンバー (入力欄のすぐ上・左:📝💡🍪🛌 / 右:🎤📋🔊) -->
+      <div class="quick-actions-bar">
+        <div class="quick-actions-left">
+          <button class="quick-icon-btn" data-action="memo" title="📝 メモをチャットで入力">📝</button>
+          <button class="quick-icon-btn" data-action="coach" title="💡 モヤモヤ">💡</button>
+          <button class="quick-icon-btn" data-action="snack" title="🍪 おなか減った">🍪</button>
+          <button class="quick-icon-btn" data-action="tired" title="🛌 もう無理">🛌</button>
+        </div>
+        <div class="quick-actions-right">
+          <button id="btn-voice-input" class="quick-icon-btn voice-input-btn" title="🎤 音声入力 (クリックで録音開始/停止)">🎤</button>
+          <button id="btn-memo-manage" class="quick-icon-btn" title="📋 メモ管理を開く">📋</button>
+          <button id="btn-sound-toggle-bottom" class="quick-icon-btn sound-toggle-btn" title="音声読み上げオン/オフ">🔊</button>
+        </div>
+      </div>
+
+      <!-- 6. チャット入力欄 -->
+      <footer class="app-footer">
+        <div class="chat-input-area">
+          <textarea id="user-input" placeholder="メッセージを入力 (⌘+Enterで送信)..." rows="1"></textarea>
+          <button id="btn-send" class="send-btn" title="送信">送信</button>
+        </div>
+      </footer>
+    </div>
+
+    <!-- 設定モーダル -->
+    <div id="settings-panel" class="modal-overlay hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>⚙️ 設定</h3>
+          <button id="btn-settings-close" class="modal-close-btn">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group form-row-toggle">
+            <label for="gemini-api-toggle">Gemini API 連動 <small>(OFF時は内蔵モード)</small></label>
+            <label class="switch">
+              <input type="checkbox" id="gemini-api-toggle" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label for="gemini-api-key">Gemini API Key</label>
+            <input type="password" id="gemini-api-key" placeholder="AQ.Ab8... または AIzaSy...">
+            <div class="token-stats-card" id="token-stats-card">
+              <div class="token-stats-row">
+                <span class="token-stats-label">📊 本日の消費:</span>
+                <span class="token-stats-val" id="today-tokens-val">0 tokens</span>
+              </div>
+              <div class="token-stats-row">
+                <span class="token-stats-label">📈 累計消費:</span>
+                <span class="token-stats-val" id="total-tokens-val">0 tokens</span>
+              </div>
+            </div>
+          </div>
+          <div class="form-group">
+            <div class="form-label-row">
+              <label for="kumapy-webapp-url">Kumapy WebApp URL</label>
+              <span id="kumapy-key-status" style="font-size:11px; color:#64748b; font-weight:600;">● 確認中…</span>
+            </div>
+            <input type="text" id="kumapy-webapp-url" placeholder="https://script.google.com/macros/s/.../exec">
+            <input type="password" id="kumapy-access-key" placeholder="Kumapy の合言葉（同期の合言葉とは別）" autocomplete="off" style="margin-top:6px;">
+            <div style="font-size:11px; color:#64748b; margin-top:4px;">合言葉はこの端末（開く場所）にだけ保存されます。URL には載せません。タスクの表示には使いません（表示は下の同期経由）。「Kumapy を開く」と接続確認に使います。</div>
+          </div>
+          <div class="form-group">
+            <div class="form-label-row">
+              <label for="companion-sync-url">☁️ クラウド同期 (GAS Web App)</label>
+              <span id="sync-status-badge" style="font-size:11px; color:#64748b; font-weight:600;">● 確認中…</span>
+            </div>
+            <input type="text" id="companion-sync-url" placeholder="https://script.google.com/macros/s/.../exec">
+            <input type="password" id="companion-sync-token" placeholder="同期の合言葉（必須）" autocomplete="off" style="margin-top:6px;">
+            <div style="font-size:11px; color:#64748b; margin-top:4px;">合言葉はこの端末（開く場所）にだけ保存されます。保存すると通るかを確かめます。未入力の間は同期せず、発言・メモは「未送信」として端末に残ります。Kumapy のタスク表示・天気・睡眠もこの合言葉で取ります。</div>
+          </div>
+          <div class="form-group form-row-toggle">
+            <label for="voice-toggle">音声読み上げ</label>
+            <label class="switch">
+              <input type="checkbox" id="voice-toggle" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <div class="form-group">
+            <div class="form-label-row">
+              <label for="voice-speaker">🎤 メイン音声（キャラクター声）</label>
+              <button id="btn-voice-preview" class="preview-voice-btn" type="button">🔊 試聴</button>
+            </div>
+            <select id="voice-speaker" class="form-select">
+              <optgroup label="👨 VOICEVOX 男性・相棒ボイス（無料WebAPI）">
+                <option value="11" selected>玄野武宏・通常（落ち着いた親友・執事声）</option>
+                <option value="39">玄野武宏・喜び（明るい親友声）</option>
+                <option value="12">白上虎太郎（元気な親友・少年声）</option>
+                <option value="51">雀松朱司（気さくな男友達・青年声）</option>
+                <option value="64">栗田まろん（爽やか・優しい友達声）</option>
+                <option value="21">剣崎雌雄（知的で落ち着いた相棒声）</option>
+                <option value="13">青山龍星（低音・頼れるイケボ）</option>
+                <option value="52">麒ヶ島宗麟（渋くて頼もしい兄貴声）</option>
+              </optgroup>
+              <optgroup label="👧 VOICEVOX 女性・マスコットボイス（無料WebAPI）">
+                <option value="8">春日部つむぎ（明るく元気な親友声）</option>
+                <option value="2">四国めたん（丁寧・お嬢様執事声）</option>
+                <option value="3">ずんだもん（ポップ・マスコット声）</option>
+                <option value="10">雨晴はう（優しく癒やし系ボイス）</option>
+              </optgroup>
+              <optgroup label="💻 OS標準音声（完全オフライン・高速・安定）" id="os-voice-optgroup" data-type="os-voices">
+                <option value="os:Otoya">macOS/iOS: Otoya (日本語・男性)</option>
+                <option value="os:Kyoko">macOS/iOS: Kyoko (日本語・女性)</option>
+                <option value="os:Siri">macOS/iOS: Siri (日本語)</option>
+                <option value="os">OS標準 自動選択</option>
+              </optgroup>
+            </select>
+            <div class="form-row-2col" style="margin-top:4px;">
+              <div class="form-group">
+                <label for="voice-pitch">メイン高さ: <span id="pitch-val">1.0</span></label>
+                <input type="range" id="voice-pitch" min="0.5" max="1.5" step="0.1" value="1.0">
+              </div>
+              <div class="form-group">
+                <label for="voice-rate">メイン速度: <span id="rate-val">1.0</span></label>
+                <input type="range" id="voice-rate" min="0.5" max="1.5" step="0.1" value="1.0">
+              </div>
+            </div>
+          </div>
+          <div class="form-group" id="fallback-voice-group" style="padding-top:4px; border-top: 1px dashed rgba(0,0,0,0.08);">
+            <div class="form-label-row">
+              <label for="voice-fallback-speaker">💻 予備・オフライン音声 <small style="font-weight:normal;color:#64748b;">(API失敗時)</small></label>
+              <button id="btn-voice-fallback-preview" class="preview-voice-btn" type="button">🔊 試聴</button>
+            </div>
+            <select id="voice-fallback-speaker" class="form-select">
+              <option value="os:Otoya" selected>macOS/iOS: Otoya (日本語・男性)</option>
+              <option value="os:Kyoko">macOS/iOS: Kyoko (日本語・女性)</option>
+              <option value="os:Siri">macOS/iOS: Siri (日本語)</option>
+              <option value="os">OS標準 自動選択</option>
+            </select>
+            <div class="form-row-2col" style="margin-top:4px;">
+              <div class="form-group">
+                <label for="voice-fallback-pitch">予備高さ: <span id="fallback-pitch-val">1.0</span></label>
+                <input type="range" id="voice-fallback-pitch" min="0.5" max="1.5" step="0.1" value="1.0">
+              </div>
+              <div class="form-group">
+                <label for="voice-fallback-rate">予備速度: <span id="fallback-rate-val">1.0</span></label>
+                <input type="range" id="voice-fallback-rate" min="0.5" max="1.5" step="0.1" value="1.0">
+              </div>
+            </div>
+          </div>
+          <div class="form-group" style="padding-top:6px; border-top: 1px dashed rgba(0,0,0,0.08);">
+            <div class="form-label-row">
+              <label for="voice-replace-dict">📖 発音・読み替え辞書</label>
+              <small style="font-weight:normal;color:#64748b;">(1行に「単語:読み」)</small>
+            </div>
+            <textarea id="voice-replace-dict" class="form-textarea" rows="3" placeholder="単語:読み&#10;例: きのぴぃ:きのぴー" style="width:100%;font-size:12px;padding:8px;border:1px solid #cbd5e1;border-radius:8px;resize:vertical;font-family:inherit;box-sizing:border-box;"></textarea>
+            <div style="font-size:11px;color:#64748b;margin-top:2px;">
+              ※ 音声読み上げ時のみ指定した読みに置き換えます（画面表示は変わりません）。
+            </div>
+          </div>
+          <div class="form-group form-row-toggle" style="display:flex;align-items:center;justify-content:space-between;margin:8px 0;">
+            <label for="notify-upcoming-toggle" style="font-size:13px;font-weight:600;color:#334155;">予定の時間ぴったりリマインド</label>
+            <label class="switch">
+              <input type="checkbox" id="notify-upcoming-toggle" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <div class="form-group form-row-toggle" style="display:flex;align-items:center;justify-content:space-between;margin:8px 0;">
+            <label for="notify-hourly-toggle" style="font-size:13px;font-weight:600;color:#334155;">毎正時の時報アナウンス</label>
+            <label class="switch">
+              <input type="checkbox" id="notify-hourly-toggle" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <div class="form-group form-row-toggle" style="display:flex;align-items:center;justify-content:space-between;margin:8px 0;">
+            <label for="notify-night-toggle" style="font-size:13px;font-weight:600;color:#334155;">深夜の夜更かしストッパー</label>
+            <label class="switch">
+              <input type="checkbox" id="notify-night-toggle" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <div class="form-group form-row-toggle" style="display:flex;align-items:center;justify-content:space-between;margin:8px 0;">
+            <label for="notify-monologue-toggle" style="font-size:13px;font-weight:600;color:#334155;">キャラクターの定期的な独り言</label>
+            <label class="switch">
+              <input type="checkbox" id="notify-monologue-toggle" checked>
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <div class="form-divider" style="height:1px;background:rgba(0,0,0,0.06);margin:12px 0;"></div>
+          <div class="form-group">
+            <label>日次前提データ（天気・睡眠・朝刊）</label>
+            <button id="btn-refresh-daily-context" class="secondary-btn" type="button" style="width:100%;margin-top:6px;padding:8px 12px;font-size:13px;border-radius:10px;background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;cursor:pointer;font-weight:600;">🔄 日次コンテキストを最新化</button>
+            <div id="daily-context-status-text" style="font-size:11px;color:#64748b;margin-top:4px;text-align:center;"></div>
+          </div>
+          <button id="btn-save-settings" class="primary-btn">設定を保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- メモ管理モーダル -->
+    <div id="memo-panel" class="modal-overlay hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>📝 メモ管理</h3>
+          <button id="btn-memo-close" class="modal-close-btn">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="memo-section-header">
+            <span>📌 保管中のメモ (<span id="memo-active-count">0</span>)</span>
+          </div>
+          <div id="memo-active-list" class="memo-item-list"></div>
+
+          <div class="memo-section-header memo-archive-header" id="btn-toggle-archive">
+            <span>📦 アーカイブ済み (<span id="memo-archived-count">0</span>)</span>
+            <span id="archive-arrow" style="font-size:10px;">▶</span>
+          </div>
+          <div id="memo-archived-list" class="memo-item-list hidden"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js?v=20260930-step43a"></script>
+</body>
+</html>
