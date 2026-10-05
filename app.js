@@ -119,6 +119,7 @@ const state = {
   isSimpleMode: localStorage.getItem("companion_simple_mode") === "true",
   
   // チャット・ログ管理
+  loadedYmd: getTodayYmd(),
   conversationHistory: [],
   oldestLoadedDate: new Date(),
   allLogDates: JSON.parse(localStorage.getItem("companion_chat_dates") || "[]"),
@@ -143,6 +144,66 @@ let currentSearchIndex = -1;
 
 // 直近のボット発話テキスト
 let lastBotSpeechText = "きのぴぃ、今日もマイペースにいきましょう。";
+
+// 📦 端末容量の上限対策：30日以上前の古いローカルログを間引く（2026-10-06 仕上げ改修）
+function pruneOldChatLogs_() {
+  try {
+    const keepDays = 30;
+    const thresholdMs = Date.now() - keepDays * 86400000;
+    const thresholdYmd = getTodayYmd(new Date(thresholdMs));
+    
+    let dates = Array.isArray(state.allLogDates) ? [...state.allLogDates] : [];
+    const keptDates = [];
+    let removedCount = 0;
+
+    for (const d of dates) {
+      if (typeof d === "string" && d < thresholdYmd) {
+        localStorage.removeItem(`companion_chat_${d}`);
+        removedCount++;
+      } else {
+        keptDates.push(d);
+      }
+    }
+
+    if (removedCount > 0) {
+      state.allLogDates = keptDates;
+      localStorage.setItem("companion_chat_dates", JSON.stringify(keptDates));
+      console.log(`[Storage] 30日以上前の古いローカル会話ログ ${removedCount} 件を間引きました`);
+    }
+  } catch (err) {
+    console.warn("[Storage] pruneOldChatLogs_ warning:", err);
+  }
+}
+
+// 🌅 朝6時またぎ（日付境界線）の自動日めくりチェック（2026-10-06 仕上げ改修）
+let rolloverChecking = false;
+async function checkDayRollover_() {
+  if (rolloverChecking) return;
+  const currentYmd = getTodayYmd();
+  if (state.loadedYmd && state.loadedYmd !== currentYmd) {
+    rolloverChecking = true;
+    console.log(`[Rollover] 日付境界（朝6時）をまたぎました: ${state.loadedYmd} -> ${currentYmd}`);
+    state.loadedYmd = currentYmd;
+    try {
+      // 1. チャットタイムラインを当日の状態にリフレッシュ
+      if (typeof initChatTimeline === "function") {
+        initChatTimeline();
+      }
+      // 2. タスク・日次コンテキスト・クラウド同期を最新化
+      await Promise.allSettled([
+        typeof fetchKumapyTasks === "function" ? fetchKumapyTasks() : Promise.resolve(),
+        typeof fetchDailyContext === "function" ? fetchDailyContext(true) : Promise.resolve(),
+        typeof syncFromCloud === "function" ? syncFromCloud(true) : Promise.resolve()
+      ]);
+      // 3. 古いログの間引きも実行
+      pruneOldChatLogs_();
+    } catch (e) {
+      console.warn("[Rollover] 日めくりリフレッシュ失敗:", e);
+    } finally {
+      rolloverChecking = false;
+    }
+  }
+}
 
 // DOM要素
 const elements = {
@@ -273,10 +334,11 @@ document.addEventListener("DOMContentLoaded", () => {
   safeRun("updateBadgeState", updateBadgeState);
   safeRun("initTokenUsage", initTokenUsage);
 
-  // 2. タイムライン・メモ描画
+  // 2. タイムライン・メモ描画 ＆ 古いログの間引き
   safeRun("initChatTimeline", initChatTimeline);
   safeRun("renderMemos", renderMemos);
   safeRun("initPullToRefresh", initPullToRefresh);
+  safeRun("pruneOldChatLogs_", pruneOldChatLogs_);
   
   // 3. ネットワーク同期を非同期で開始（メインスレッドをブロックしない）
   setTimeout(() => {
@@ -285,9 +347,11 @@ document.addEventListener("DOMContentLoaded", () => {
   }, 30);
 
   // 定期バックグラウンド自動同期
-  // 2026-09-30（ステップ4-3）: タスクは同期サーバー経由（getKumapyTasks、サーバーで20秒キャッシュ）。60秒ごと
+  // 2026-10-06: 同期インターバルを60秒へ適正化（通信量・負荷軽減）
   setInterval(fetchKumapyTasks, 60 * 1000);
-  setInterval(syncFromCloud, 45 * 1000);
+  setInterval(syncFromCloud, 60 * 1000);
+  // 朝6時またぎ（日付変更線）の定期監視（30秒ごと）
+  setInterval(checkDayRollover_, 30 * 1000);
   // Kumapy との接続・合言葉の確認（2026-09-30 ステップ4-2）：起動時と5分ごと
   setTimeout(() => safeRun("checkKumapyConnection_", checkKumapyConnection_), 3000);
   setInterval(checkKumapyConnection_, 5 * 60 * 1000);
@@ -303,14 +367,16 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // PWA/ブラウザ復帰時（画面復帰・アプリ切り替え・タブフォーカス）の自動同期
+  // PWA/ブラウザ復帰時（画面復帰・アプリ切り替え・タブフォーカス）の自動同期 ＆ 日めくり判定
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
+      checkDayRollover_();
       syncFromCloud();
       fetchKumapyTasks();
     }
   });
   window.addEventListener("focus", () => {
+    checkDayRollover_();
     syncFromCloud();
   });
 
