@@ -87,6 +87,8 @@ const state = {
   personaPrompt: localStorage.getItem("companion_persona_prompt") || "",
   personaFetchDate: "",
   voiceEnabled: localStorage.getItem("voice_enabled") !== "false",
+  // 2026-10-07：外部の音声合成（api.tts.quest）に読み上げる文を送るか。最初はオフ（ローカル VOICEVOX が無ければ端末の音声）
+  voiceExternalTts: localStorage.getItem("voice_external_tts") === "true",
   voiceSpeaker: localStorage.getItem("voice_speaker") || "11",
   voiceFallbackSpeaker: localStorage.getItem("voice_fallback_speaker") || "os:Otoya",
   voicePitch: parseFloat(localStorage.getItem("voice_pitch") || "1.0"),
@@ -175,12 +177,17 @@ function pruneOldChatLogs_() {
   }
 }
 
-// 🌅 朝6時またぎ（日付境界線）の自動日めくりチェック（2026-10-06 仕上げ改修）
+// 🌅 朝6時またぎ（日付境界線）の自動日めくりチェック（2026-10-06 仕上げ改修、2026-10-07 会話中は待つ）
 let rolloverChecking = false;
+var pwaLastChatAt = 0; // 2026-10-07：最後に保存したやりとりの時刻
 async function checkDayRollover_() {
   if (rolloverChecking) return;
   const currentYmd = getTodayYmd();
   if (state.loadedYmd && state.loadedYmd !== currentYmd) {
+    // 2026-10-07：会話の途中（考え中・入力中・直近5分にやりとり）は、落ち着くまで待つ
+    const typing = elements.userInput && elements.userInput.value.trim();
+    const thinking = Boolean(document.getElementById("pwa-live-typing-indicator"));
+    if (typing || thinking || (Date.now() - pwaLastChatAt) < 5 * 60 * 1000) return;
     rolloverChecking = true;
     console.log(`[Rollover] 日付境界（朝6時）をまたぎました: ${state.loadedYmd} -> ${currentYmd}`);
     state.loadedYmd = currentYmd;
@@ -348,8 +355,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // 定期バックグラウンド自動同期
   // 2026-10-06: 同期インターバルを60秒へ適正化（通信量・負荷軽減）
-  setInterval(fetchKumapyTasks, 60 * 1000);
-  setInterval(syncFromCloud, 60 * 1000);
+  // 2026-10-07：画面が隠れている間は取りに行かない（戻ったときに visibilitychange で取り直す）
+  setInterval(() => { if (!document.hidden) fetchKumapyTasks(); }, 60 * 1000);
+  setInterval(() => { if (!document.hidden) syncFromCloud(); }, 60 * 1000);
   // 朝6時またぎ（日付変更線）の定期監視（30秒ごと）
   setInterval(checkDayRollover_, 30 * 1000);
   // Kumapy との接続・合言葉の確認（2026-09-30 ステップ4-2）：起動時と5分ごと
@@ -525,7 +533,7 @@ function unlockAudioContext() {
 // トークン消費集計
 // ==========================================
 function initTokenUsage() {
-  const todayYmd = new Date().toISOString().slice(0, 10);
+  const todayYmd = getTodayYmd(); // 2026-10-07：UTC ではなく朝6時区切りの日付
   if (state.tokenUsageDate !== todayYmd) {
     state.tokenUsageDate = todayYmd;
     state.todayTokens = 0;
@@ -537,7 +545,7 @@ function initTokenUsage() {
 
 function recordTokenUsage(tokens) {
   if (!tokens || tokens <= 0) return;
-  const todayYmd = new Date().toISOString().slice(0, 10);
+  const todayYmd = getTodayYmd(); // 2026-10-07：UTC ではなく朝6時区切りの日付
   if (state.tokenUsageDate !== todayYmd) {
     state.tokenUsageDate = todayYmd;
     state.todayTokens = 0;
@@ -583,6 +591,9 @@ function loadSettingsToUI() {
   if (elements.companionSyncUrlInput) elements.companionSyncUrlInput.value = state.syncGasUrl;
   if (elements.companionSyncTokenInput) elements.companionSyncTokenInput.value = state.syncToken;
   if (elements.voiceToggle) elements.voiceToggle.checked = state.voiceEnabled;
+  state.voiceExternalTts = localStorage.getItem("voice_external_tts") === "true";
+  const extTtsEl = document.getElementById("voice-external-tts-toggle");
+  if (extTtsEl) extTtsEl.checked = state.voiceExternalTts;
   if (elements.voiceSpeaker) elements.voiceSpeaker.value = state.voiceSpeaker;
   if (elements.voiceFallbackSpeaker) elements.voiceFallbackSpeaker.value = state.voiceFallbackSpeaker;
   updateVoiceSettingsUI();
@@ -1361,7 +1372,9 @@ async function processRecordedAudio(audioBlob, mimeType) {
       reader.onloadend = async () => {
         try {
           const base64Data = reader.result.split(",")[1];
-          const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${encodeURIComponent(state.geminiApiKey)}`;
+          const endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
+          const audioCtrl = new AbortController();
+          const audioTimer = setTimeout(() => audioCtrl.abort(), 30000);
 
           const prompt = `ユーザー（きのぴぃ）からの音声録音メッセージです。
 以下の手順で処理してください：
@@ -1401,9 +1414,12 @@ async function processRecordedAudio(audioBlob, mimeType) {
 
           const res = await fetch(endpoint, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            headers: { "Content-Type": "application/json", "x-goog-api-key": state.geminiApiKey },
+            body: JSON.stringify(payload),
+            signal: audioCtrl.signal
           });
+          clearTimeout(audioTimer);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
           const data = await res.json();
           elements.aiStatusIndicator.classList.add("hidden");
@@ -1413,22 +1429,25 @@ async function processRecordedAudio(audioBlob, mimeType) {
           }
 
           const rawJson = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (rawJson) {
-            const parsed = JSON.parse(rawJson);
-            if (parsed.userText && parsed.userText !== "（聞き取れませんでした）") {
-              addMessageBubble("user", parsed.userText, null, true);
-            }
-            if (parsed.replyText) {
-              addMessageBubble("bot", parsed.replyText, null, true);
-              speak(parsed.replyText);
-            }
+          if (!rawJson) throw new Error("空の返事");
+          let parsed;
+          try { parsed = JSON.parse(rawJson); } catch (pe) { throw new Error("JSON parse error"); }
+          if (parsed.userText && parsed.userText !== "（聞き取れませんでした）") {
+            addMessageBubble("user", parsed.userText, null, true);
+          }
+          if (parsed.replyText) {
+            addMessageBubble("bot", parsed.replyText, null, true);
+            speak(parsed.replyText);
+          } else {
+            throw new Error("空の返事");
           }
         } catch (e) {
-          console.error("Audio Gemini parse error:", e);
+          // 2026-10-07（GC-27）：失敗を見える形にし、録音は手元に残して送り直せるようにする（ログには書かない）
+          console.error("Audio Gemini error:", e && e.message);
           elements.aiStatusIndicator.classList.add("hidden");
-          const fallback = "うまく聞き取れなかったみたい。もう一度話しかけてね！";
-          addMessageBubble("bot", fallback, null, true);
-          speak(fallback);
+          updateBadgeState("error");
+          showAiFallbackNotice_(`⚠️ 音声を文字にできませんでした（${aiFailReason_(e)}）。録音はこの画面に残っています`,
+            () => processRecordedAudio(audioBlob, mimeType));
         }
       };
     } catch (err) {
@@ -1438,7 +1457,7 @@ async function processRecordedAudio(audioBlob, mimeType) {
   } else {
     elements.aiStatusIndicator.classList.add("hidden");
     const msg = "音声入力を賢く使うには、設定（⚙️）からGemini API Keyを設定してね！";
-    addMessageBubble("bot", msg, null, true);
+    addMessageBubble("bot", msg, null, false); // 2026-10-07：案内はログに残さない
     speak(msg);
   }
 }
@@ -1718,6 +1737,11 @@ async function speakWithVoicevox(text, speakerId, rate = state.voiceRate, pitch 
       }
     }
   } catch (e) {}
+
+  // 2026-10-07：外部へ送るのは設定でオンにしたときだけ。オフなら呼び出し元が端末の音声に切り替える
+  if (!arrayBuffer && !state.voiceExternalTts) {
+    throw new Error("ローカルの VOICEVOX が無く、外部の音声合成はオフです");
+  }
 
   // 2. ローカルがない場合は公開 VOICEVOX WebAPI を使用
   if (!arrayBuffer) {
@@ -2562,6 +2586,7 @@ function addMessageBubble(role, text, timeStr, shouldSave = true) {
   }
 
   if (shouldSave) {
+    pwaLastChatAt = Date.now();
     const todayYmd = getTodayYmd();
     registerLogDate(todayYmd);
     try {
@@ -2682,19 +2707,20 @@ async function callGeminiApi(userPrompt) {
     }
   };
 
-  const modelsToTry = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-flash-latest"];
+  // 2026-10-07：1.5 系は提供終了、2.5-flash は新規には 404 のため最新の flash の別名を先に。1モデル15秒まで。キーはヘッダーで送る
+  const modelsToTry = ["gemini-flash-latest", "gemini-2.5-flash"];
   let data = null;
   let lastErr = null;
 
   try {
     for (const modelName of modelsToTry) {
       try {
-        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(state.geminiApiKey)}`;
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
         const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 6000);
+        const timer = setTimeout(() => ctrl.abort(), 15000);
         const res = await fetch(endpoint, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "x-goog-api-key": state.geminiApiKey },
           body: JSON.stringify(payload),
           signal: ctrl.signal
         });
@@ -2705,7 +2731,7 @@ async function callGeminiApi(userPrompt) {
           data = json;
           break;
         } else {
-          lastErr = json.error || new Error(`HTTP ${res.status}`);
+          lastErr = new Error(`HTTP ${res.status}`);
         }
       } catch (e) {
         lastErr = e;
@@ -2715,18 +2741,23 @@ async function callGeminiApi(userPrompt) {
     hideThinkingIndicator();
 
     if (!data) {
-      console.warn("Gemini Error across all models:", lastErr);
+      console.error("Gemini Error across all models:", lastErr && lastErr.message);
       updateBadgeState("error");
-      handleBuiltinResponse(userPrompt);
+      handleBuiltinResponse(userPrompt, aiFailReason_(lastErr));
       return;
     }
-
-    updateBadgeState(); // 成功時はアクティブ状態に戻す
 
     const candidate = data.candidates && data.candidates[0];
     const parts = candidate?.content?.parts || [];
     const textPart = parts.find(p => !p.thought && p.text) || parts[parts.length - 1];
-    const replyText = textPart?.text?.trim() || "（返答を生成できませんでした）";
+    const replyText = textPart?.text?.trim() || "";
+    if (!replyText) {
+      // 2026-10-07（GC-27）：空の返事を「（返答を生成できませんでした）」として保存しない
+      updateBadgeState("error");
+      handleBuiltinResponse(userPrompt, "空の返事");
+      return;
+    }
+    updateBadgeState(); // 成功時はアクティブ状態に戻す
 
     if (data.usageMetadata && data.usageMetadata.totalTokenCount) {
       recordTokenUsage(data.usageMetadata.totalTokenCount);
@@ -2744,12 +2775,39 @@ async function callGeminiApi(userPrompt) {
   } catch (err) {
     hideThinkingIndicator();
     updateBadgeState("error");
-    console.error("Fetch Gemini error:", err);
-    handleBuiltinResponse(userPrompt);
+    console.error("Fetch Gemini error:", err && err.message);
+    handleBuiltinResponse(userPrompt, aiFailReason_(err));
   }
 }
 
-function handleBuiltinResponse(text) {
+// 2026-10-07（GC-27）：AI に接続できず定型の返事を出したときの注意書き（会話の記憶にもログにも入れない）
+function aiFailReason_(err) {
+  const msg = String((err && (err.message || err.status || err)) || "");
+  if (err && err.name === "AbortError") return "時間切れ";
+  const m = msg.match(/HTTP (\d{3})/);
+  if (m) return "HTTP " + m[1];
+  if (/空の返事/.test(msg)) return "空の返事";
+  if (/JSON/.test(msg)) return "返事の形が不正";
+  return "通信エラー";
+}
+function showAiFallbackNotice_(text, retryFn) {
+  if (!elements.chatTimeline) return;
+  const el = document.createElement("div");
+  el.className = "ai-fallback-notice";
+  el.style.cssText = "font-size:11px;color:#E65100;margin:4px 12px;line-height:1.5;white-space:pre-wrap;";
+  el.textContent = text;
+  if (retryFn) {
+    const b = document.createElement("button");
+    b.textContent = "もう一度送る";
+    b.style.cssText = "margin-left:6px;font-size:11px;";
+    b.addEventListener("click", (e) => { e.stopPropagation(); el.remove(); retryFn(); });
+    el.appendChild(b);
+  }
+  elements.chatTimeline.appendChild(el);
+  scrollToBottom();
+}
+
+function handleBuiltinResponse(text, failReason) {
   let reply = "";
   if (text.includes("おつかれ") || text.includes("疲れた") || text.includes("つかれた") || text.includes("もう無理")) {
     reply = "無理は禁物ですよ、きのぴぃ。今日はタオル投げましょう。目を休めてください。";
@@ -2843,7 +2901,9 @@ function handleBuiltinResponse(text) {
     setAvatarCut("look_far", 8000);
   }
 
-  addMessageBubble("bot", reply, null, true);
+  // 2026-10-07（GC-27）：AI の失敗で定型の返事にしたときは、ログに残さず注意書きを添える
+  addMessageBubble("bot", reply, null, !failReason);
+  if (failReason) showAiFallbackNotice_(`⚠️ AI に接続できませんでした（${failReason}）。定型の返事を表示しています（ログには残しません）`);
   speak(reply);
 }
 
@@ -2934,6 +2994,7 @@ async function handleQuickAction(action) {
   addMessageBubble("user", item.label, null, true);
 
   let reply = "";
+  let quickFail = ""; // 2026-10-07（GC-27）：AI を使ったのに失敗したときの理由
   // 💡 モヤモヤのみ Gemini で深く思考をほぐす。🍪 おなか減った / 🛌 もう無理 は即時定型文
   if (action === "coach" && state.geminiEnabled && state.geminiApiKey) {
     showThinkingIndicator("Mattが思考中...");
@@ -2945,6 +3006,7 @@ async function handleQuickAction(action) {
       if (contents.length > 0 && contents[contents.length - 1].role === "user") {
         contents[contents.length - 1].parts[0].text = item.prompt;
       }
+      quickFail = "通信エラー"; // 2026-10-07：成功したら reply が入るので使われない
 
       const weatherLine = state.todayWeather ? 
         `\n- 本日の気象 (${state.todayWeather.location}): ${state.todayWeather.weather} (最高 ${state.todayWeather.maxTemp}℃ / 最低 ${state.todayWeather.minTemp}℃, 降水 ${state.todayWeather.precipitation}mm)` : 
@@ -2959,15 +3021,16 @@ async function handleQuickAction(action) {
         generationConfig: { temperature: 0.7, maxOutputTokens: 1000 }
       };
 
-      const modelsToTry = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-flash-latest"];
+      // 2026-10-07：2秒の打ち切りでほぼ毎回定型文になっていたため、1モデル15秒に。キーはヘッダーで送る
+      const modelsToTry = ["gemini-flash-latest", "gemini-2.5-flash"];
       for (const modelName of modelsToTry) {
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 2000);
+          const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(state.geminiApiKey)}`, {
+          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", "x-goog-api-key": state.geminiApiKey },
             body: JSON.stringify(payload),
             signal: controller.signal
           });
@@ -2983,10 +3046,16 @@ async function handleQuickAction(action) {
                 recordTokenUsage(data.usageMetadata.totalTokenCount);
               }
               if (reply) break;
+              quickFail = "空の返事";
+            } else {
+              quickFail = "HTTP " + res.status;
             }
+          } else {
+            quickFail = "HTTP " + res.status;
           }
         } catch (apiErr) {
-          console.warn(`Gemini API error on quick action (${modelName}):`, apiErr);
+          console.warn(`Gemini API error on quick action (${modelName}):`, apiErr && apiErr.message);
+          quickFail = aiFailReason_(apiErr);
         }
       }
     } catch (err) {
@@ -2996,12 +3065,16 @@ async function handleQuickAction(action) {
 
   hideThinkingIndicator();
 
+  const usedFallback = !reply;
   if (!reply) {
     const candidates = item.fallback;
     reply = candidates[Math.floor(Math.random() * candidates.length)];
   }
 
-  addMessageBubble("bot", reply, null, true);
+  // 2026-10-07（GC-27）：AI を使うはずだったのに失敗したときは、ログに残さず注意書きを添える
+  const aiFailedQuick = usedFallback && quickFail;
+  addMessageBubble("bot", reply, null, !aiFailedQuick);
+  if (aiFailedQuick) showAiFallbackNotice_(`⚠️ AI に接続できませんでした（${quickFail}）。定型の返事を表示しています（ログには残しません）`);
   speak(reply);
 }
 
@@ -3524,6 +3597,8 @@ function saveSettings(showBubble = true) {
     state.syncToken = elements.companionSyncTokenInput.value.trim();
   }
   state.voiceEnabled = elements.voiceToggle.checked;
+  const extTtsSaveEl = document.getElementById("voice-external-tts-toggle");
+  if (extTtsSaveEl) state.voiceExternalTts = extTtsSaveEl.checked;
   state.voiceSpeaker = elements.voiceSpeaker.value;
   if (elements.voiceFallbackSpeaker) {
     state.voiceFallbackSpeaker = elements.voiceFallbackSpeaker.value;
@@ -3556,7 +3631,10 @@ function saveSettings(showBubble = true) {
   localStorage.setItem("companion_sync_gas_url", state.syncGasUrl);
   localStorage.setItem("companion_sync_token", state.syncToken);
   localStorage.setItem("voice_enabled", state.voiceEnabled);
+  localStorage.setItem("voice_external_tts", state.voiceExternalTts);
   localStorage.setItem("voice_speaker", state.voiceSpeaker);
+  // 2026-10-07：この端末で設定を保存した時刻（同期で古いクラウドの設定に戻されないよう、比べるのに使う）
+  localStorage.setItem("companion_settings_local_at", new Date().toISOString());
   localStorage.setItem("voice_fallback_speaker", state.voiceFallbackSpeaker);
   localStorage.setItem("voice_pitch", state.voicePitch);
   localStorage.setItem("voice_rate", state.voiceRate);
@@ -3718,13 +3796,14 @@ async function syncFromCloud(force = false) {
   // 1. 設定の同期取得（クラウドが新しい場合のみ上書き）
   try {
     const data = await fetchGasJsonp("getSettings");
-    if (data && data.success && data.settings) {
+    // 2026-10-07：設定画面を開いている間と、この端末で保存した設定の方が新しいときは、クラウドの値で上書きしない
+    const panelOpen = elements.settingsPanel && !elements.settingsPanel.classList.contains("hidden");
+    const localAt = localStorage.getItem("companion_settings_local_at") || "";
+    const cloudAt = data && data.settings && data.settings.updatedAt ? String(data.settings.updatedAt) : "";
+    if (data && data.success && data.settings && !panelOpen && cloudAt && (!localAt || cloudAt > localAt)) {
       const s = data.settings;
       if (typeof s === "object") {
-        if (s.geminiApiKey !== undefined && s.geminiApiKey !== state.geminiApiKey) {
-          state.geminiApiKey = s.geminiApiKey;
-          localStorage.setItem("gemini_api_key", s.geminiApiKey);
-        }
+        // Gemini キーはクラウドから受け取らない（サーバーも返さない。2026-10-07 で受け口を削除）
         if (s.geminiEnabled !== undefined && s.geminiEnabled !== state.geminiEnabled) {
           state.geminiEnabled = Boolean(s.geminiEnabled);
           localStorage.setItem("gemini_enabled", state.geminiEnabled);
@@ -3745,6 +3824,7 @@ async function syncFromCloud(force = false) {
           state.voiceRate = parseFloat(s.voiceRate);
           localStorage.setItem("voice_rate", state.voiceRate);
         }
+        localStorage.setItem("companion_settings_local_at", cloudAt);
         loadSettingsToUI();
       }
     }
@@ -3754,14 +3834,8 @@ async function syncFromCloud(force = false) {
 
   // 2. 本日の会話ログの同期取得＆マージ（正本反映）
   try {
-    let data = await fetchGasJsonp("getLogs", { date: todayYmd });
-    const calendarYmd = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}-${String(new Date().getDate()).padStart(2, "0")}`;
-    if ((!data || !data.success || !Array.isArray(data.messages) || data.messages.length === 0) && todayYmd !== calendarYmd) {
-      const fallbackData = await fetchGasJsonp("getLogs", { date: calendarYmd });
-      if (fallbackData && fallbackData.success && Array.isArray(fallbackData.messages) && fallbackData.messages.length > 0) {
-        data = fallbackData;
-      }
-    }
+    // 2026-10-07：0〜6時に暦の日付のログも取りに行き、前日扱いの日付に混ぜていたのをやめた（書き込みは両端末とも朝6時区切りの日付）
+    const data = await fetchGasJsonp("getLogs", { date: todayYmd });
 
     if (data && data.success && Array.isArray(data.messages) && data.messages.length > 0) {
       const cloudMessages = data.messages;
@@ -3852,7 +3926,8 @@ async function syncFromCloud(force = false) {
 
   // 3. メモの同期取得＆マージ
   try {
-    const data = await fetchGasJsonp("getMemos", { date: todayYmd });
+    // 2026-10-07：当日＋過去30日のメモ（チェックしていないメモを日をまたいで残す。gas-second-sync Ver.14 の range）
+    const data = await fetchGasJsonp("getMemos", { date: todayYmd, range: MEMO_RANGE_DAYS });
     if (data && data.success && Array.isArray(data.memos)) {
       let memoChanged = false;
       data.memos.forEach(cm => {
@@ -3864,7 +3939,7 @@ async function syncFromCloud(force = false) {
           state.memos.unshift({
             id: cm.id || Date.now().toString(),
             serverId: cm.id || "",
-            serverDate: todayYmd,
+            serverDate: cm.date || todayYmd,
             text: cm.text,
             date: cm.dateTime || new Date().toLocaleDateString("ja-JP"),
             archived: Boolean(cm.checked)
@@ -3873,7 +3948,7 @@ async function syncFromCloud(force = false) {
         } else {
           if (cm.id && local.serverId !== cm.id) {
             local.serverId = cm.id;
-            local.serverDate = todayYmd;
+            local.serverDate = cm.date || todayYmd;
             memoChanged = true;
           }
           // Mac版などで切り替えたアーカイブ状態を反映（こちらの変更が未送信の間は上書きしない）
@@ -3883,13 +3958,13 @@ async function syncFromCloud(force = false) {
           }
         }
       });
-      // 他の端末で削除されたメモを、この端末からも消す（Step3.5e）
-      // 対象：今日のログにあると確認済み（serverId あり）で、クラウドの一覧から消え、この端末の変更も送信待ちでないもの
+      // 他の端末で削除されたメモ・30日より前のメモを、この端末からも消す（Step3.5e、2026-10-07 範囲を30日に）
+      // 対象：サーバーで確認済み（serverId あり）で、クラウドの一覧から消えたか範囲外になり、この端末の変更も送信待ちでないもの
       const cloudIds = new Set(data.memos.map(cm => cm.id));
       const cloudTexts = new Set(data.memos.map(cm => cm.text));
       const beforeCount = state.memos.length;
       state.memos = state.memos.filter(m => !(
-        m.serverId && m.serverDate === todayYmd &&
+        m.serverId && m.serverDate &&
         !cloudIds.has(m.serverId) && !cloudTexts.has(m.text) &&
         !hasPendingMemoOp_(m.text)
       ));
@@ -3910,8 +3985,10 @@ async function syncFromCloud(force = false) {
 //  - 各書き込みに clientId を付け、サーバー側で二重登録を防ぐ（再送しても1回だけ書かれる）
 // ==========================================
 const OUTBOX_KEY = "companion_outbox";
+const MEMO_RANGE_DAYS = 30; // 2026-10-07：何日前までのメモを出すか
 const MEMO_TOMBSTONE_KEY = "companion_memo_tombstones";
-const OUTBOX_MAX_TRIES = 20;
+// 2026-10-07：回数で捨てるのをやめた（送れるまで残す。破棄は「未送信」をタップしたときの確認からだけ）
+const OUTBOX_FAILED_KEY = "companion_outbox_failed";
 let outboxMem = null;
 let outboxFlushing = false;
 const syncStatus = { state: "unknown", lastOkAt: null };
@@ -4068,20 +4145,17 @@ async function flushOutboxInner_() {
         break;
       }
       if (res && res.code === "BAD_REQUEST" || (res && /^(Empty|Unknown action)/.test(res.error || ""))) {
-        // 何度送っても通らない内容なので捨てる
-        console.warn("outbox op rejected:", op.action, res.error);
+        // 何度送っても通らない内容。2026-10-07：黙って捨てず「書けなかった」一覧に移して画面で知らせる
+        console.error("outbox op rejected:", op.action, res.error);
         ob.shift();
+        addFailedOp_(op, res.error || res.code);
         saveOutbox_();
         continue;
       }
-      // BUSY・サーバー内部エラー等：後で再送（上限を超えたら捨てる）
+      // BUSY・サーバー内部エラー等：後で再送（2026-10-07：回数で捨てない）
       op.tries = (op.tries || 0) + 1;
       op.lastError = "サーバー: " + ((res && (res.code || res.error)) || "不明な応答");
-      if (op.tries >= OUTBOX_MAX_TRIES) {
-        console.warn("outbox op dropped after retries:", op.action, res && res.error);
-        ob.shift();
-      }
-      setSyncStatus_("offline");
+      setSyncStatus_(res ? "servererror" : "offline");
       saveOutbox_();
       break;
     }
@@ -4107,6 +4181,7 @@ function describeOutbox_() {
 // 未送信を再送し、残ったら中身を表示。破棄するかを確認する（Step3.5 追補）
 async function manageOutbox_() {
   await flushOutbox();
+  if (loadOutbox_().length === 0 && showFailedOps_()) return; // 2026-10-07
   if (loadOutbox_().length === 0) {
     addMessageBubble("bot", "未送信はすべて送れました。", null, false);
     return;
@@ -4124,6 +4199,34 @@ async function manageOutbox_() {
     saveOutbox_();
     addMessageBubble("bot", "未送信を破棄しました。", null, false);
   }
+}
+
+// 2026-10-07：サーバーが受け付けなかった書き込み（この端末だけ、最大50件）
+function loadFailedOps_() {
+  try {
+    const v = JSON.parse(localStorage.getItem(OUTBOX_FAILED_KEY) || "[]");
+    return Array.isArray(v) ? v : [];
+  } catch (e) {
+    return [];
+  }
+}
+function addFailedOp_(op, reason) {
+  const list = loadFailedOps_();
+  list.push({ action: op.action, params: op.params, createdAt: op.createdAt, reason: String(reason || "").slice(0, 80) });
+  try { localStorage.setItem(OUTBOX_FAILED_KEY, JSON.stringify(list.slice(-50))); } catch (e) {}
+}
+function showFailedOps_() {
+  const list = loadFailedOps_();
+  if (list.length === 0) return false;
+  const names = { appendLog: "発言", saveMemo: "メモ追加", updateMemo: "メモ完了/復元", deleteMemo: "メモ削除" };
+  const lines = list.map(f => {
+    const p = f.params || {};
+    return `・${names[f.action] || f.action}（${p.date || ""} ${p.time || ""}）：${String(p.text || "").slice(0, 200)}`;
+  });
+  showAiFallbackNotice_(`⚠️ サーバーが受け付けず、Vault に書けなかった ${list.length} 件です（必要なら手で残してください）\n` + lines.join("\n"));
+  try { localStorage.removeItem(OUTBOX_FAILED_KEY); } catch (e) {}
+  renderSyncStatus();
+  return true;
 }
 
 function setSyncStatus_(s) {
@@ -4161,6 +4264,10 @@ function renderSyncStatus() {
     badgeText = `● 未同期（合言葉が違います）${pendingText}`;
     badgeColor = "#C62828";
     alertText = `⚠️ 未同期：合言葉が違います${pendingText}`;
+  } else if (syncStatus.state === "servererror") {
+    badgeText = `● 未同期（サーバーのエラー）${pendingText}`;
+    badgeColor = "#C62828";
+    alertText = `⚠️ 未同期：サーバーがエラーを返しました${pendingText}（タップで再送）`;
   } else if (syncStatus.state === "offline") {
     badgeText = `● 未同期（通信できません）${pendingText}`;
     badgeColor = "#E65100";
@@ -4182,6 +4289,10 @@ function renderSyncStatus() {
   if (elements.syncStatusBadge) {
     elements.syncStatusBadge.textContent = badgeText;
     elements.syncStatusBadge.style.color = badgeColor;
+  }
+  const failedCount = loadFailedOps_().length;
+  if (failedCount > 0 && !alertText) {
+    alertText = `⚠️ Vault に書けなかった ${failedCount} 件（タップで表示）`;
   }
   if (elements.syncAlertIndicator) {
     elements.syncAlertIndicator.textContent = alertText;

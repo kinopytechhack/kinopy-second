@@ -280,6 +280,14 @@
               <span class="slider round"></span>
             </label>
           </div>
+          <div class="form-group form-row-toggle">
+            <label for="voice-external-tts-toggle">外部の音声合成を使う（api.tts.quest）</label>
+            <label class="switch">
+              <input type="checkbox" id="voice-external-tts-toggle">
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <div style="font-size:11px; color:#64748b; margin:-4px 0 8px;">オンにすると、ローカルの VOICEVOX が無いとき、読み上げる文の先頭（日記・タスク由来の内容を含む）を外部のサービスへ送ります。オフなら端末の音声で読みます。</div>
           <div class="form-group">
             <div class="form-label-row">
               <label for="voice-speaker">🎤 メイン音声（キャラクター声）</label>
@@ -414,6 +422,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=20261006-refine"></script>
+  <script src="app.js?v=20261007-claude"></script>
 </body>
 </html>
