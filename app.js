@@ -1169,6 +1169,10 @@ function setupEventListeners() {
       window.speechSynthesis.cancel();
     }
 
+    const extEl = document.getElementById("voice-external-tts-toggle");
+    const savedExt = state.voiceExternalTts;
+    if (extEl) state.voiceExternalTts = extEl.checked; // 2026-10-07（2回目）：保存前のチェックでも試聴できるように
+    let previewNote = "";
     try {
       if (!speakerId.startsWith("os") && speakerId !== "os") {
         await speakWithVoicevox(sampleText, speakerId, rate, pitch);
@@ -1176,10 +1180,15 @@ function setupEventListeners() {
         speakWithWebSpeech(sampleText, rate, pitch, speakerId);
       }
     } catch (err) {
-      console.warn("Voice preview error:", err);
+      console.warn("Voice preview error:", err && err.message);
+      // 2026-10-07（2回目）：無音で終わらせず、予備の端末の声で鳴らす
+      speakWithWebSpeech(sampleText, state.voiceFallbackRate, state.voiceFallbackPitch, state.voiceFallbackSpeaker || "os:Otoya");
+      previewNote = state.voiceExternalTts ? "⚠️ VOICEVOX に届かず端末の声で再生" : "⚠️ 外部の音声合成がオフのため端末の声で再生";
     } finally {
-      elements.btnVoicePreview.textContent = originalText;
+      state.voiceExternalTts = savedExt;
+      elements.btnVoicePreview.textContent = previewNote || originalText;
       elements.btnVoicePreview.disabled = false;
+      if (previewNote) setTimeout(() => { elements.btnVoicePreview.textContent = originalText; }, 4000);
     }
   });
 
@@ -1367,9 +1376,15 @@ async function processRecordedAudio(audioBlob, mimeType) {
 
   if (state.geminiApiKey && state.geminiEnabled) {
     try {
+      pwaLastChatAt = Date.now(); // 2026-10-07（2回目）：音声の処理中に日めくりしない
       const reader = new FileReader();
+      reader.onerror = () => {
+        elements.aiStatusIndicator.classList.add("hidden");
+        showAiFallbackNotice_("⚠️ 録音を読み込めませんでした。もう一度話してください");
+      };
       reader.readAsDataURL(audioBlob);
       reader.onloadend = async () => {
+        if (reader.error) return; // onerror で表示済み
         try {
           const base64Data = reader.result.split(",")[1];
           const endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
@@ -1399,7 +1414,7 @@ async function processRecordedAudio(audioBlob, mimeType) {
             }],
             generationConfig: {
               // 2026-10-07：Gemini 3.6 Flash 以降で temperature は非推奨（Googleから通知メール）のため送らない
-              maxOutputTokens: 1000,
+              maxOutputTokens: 2048,
               response_mime_type: "application/json",
               response_schema: {
                 type: "OBJECT",
@@ -1432,15 +1447,14 @@ async function processRecordedAudio(audioBlob, mimeType) {
           if (!rawJson) throw new Error("空の返事");
           let parsed;
           try { parsed = JSON.parse(rawJson); } catch (pe) { throw new Error("JSON parse error"); }
+          // 2026-10-07（2回目）：返事が無いときは発言も出さない（「もう一度送る」で二重にならないように）
+          if (!parsed.replyText) throw new Error("空の返事");
+          updateBadgeState();
           if (parsed.userText && parsed.userText !== "（聞き取れませんでした）") {
             addMessageBubble("user", parsed.userText, null, true);
           }
-          if (parsed.replyText) {
-            addMessageBubble("bot", parsed.replyText, null, true);
-            speak(parsed.replyText);
-          } else {
-            throw new Error("空の返事");
-          }
+          addMessageBubble("bot", parsed.replyText, null, true);
+          speak(parsed.replyText);
         } catch (e) {
           // 2026-10-07（GC-27）：失敗を見える形にし、録音は手元に残して送り直せるようにする（ログには書かない）
           console.error("Audio Gemini error:", e && e.message);
@@ -2560,7 +2574,7 @@ function hideThinkingIndicator() {
   }
 }
 
-function addMessageBubble(role, text, timeStr, shouldSave = true) {
+function addMessageBubble(role, text, timeStr, shouldSave = true, addToHistory = true) {
   hideThinkingIndicator();
   if (!timeStr) {
     timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -2577,10 +2591,13 @@ function addMessageBubble(role, text, timeStr, shouldSave = true) {
     }
   }
 
-  state.conversationHistory.push({
-    role: role === "user" ? "user" : "model",
-    text: text
-  });
+  // 2026-10-07（2回目）：AI 失敗時の定型の返事は会話の記憶に入れない
+  if (addToHistory) {
+    state.conversationHistory.push({
+      role: role === "user" ? "user" : "model",
+      text: text
+    });
+  }
   if (state.conversationHistory.length > 20) {
     state.conversationHistory.shift();
   }
@@ -2703,7 +2720,7 @@ async function callGeminiApi(userPrompt) {
     contents: contents,
     generationConfig: {
       // 2026-10-07：Gemini 3.6 Flash 以降で temperature は非推奨（Googleから通知メール）のため送らない
-      maxOutputTokens: 1000
+      maxOutputTokens: 2048 // 2026-10-07（2回目）：考える分も上限に数えられ、返事が空になるのを防ぐ
     }
   };
 
@@ -2726,8 +2743,10 @@ async function callGeminiApi(userPrompt) {
         });
         clearTimeout(timer);
 
+        // 2026-10-07（2回目）：先に res.ok を見る（5xx の HTML を「返事の形が不正」と誤表示しない）
+        if (!res.ok) { lastErr = new Error(`HTTP ${res.status}`); continue; }
         const json = await res.json();
-        if (res.ok && !json.error) {
+        if (!json.error) {
           data = json;
           break;
         } else {
@@ -2749,7 +2768,7 @@ async function callGeminiApi(userPrompt) {
 
     const candidate = data.candidates && data.candidates[0];
     const parts = candidate?.content?.parts || [];
-    const textPart = parts.find(p => !p.thought && p.text) || parts[parts.length - 1];
+    const textPart = parts.find(p => !p.thought && p.text); // 2026-10-07（2回目）：thought を拾わない
     const replyText = textPart?.text?.trim() || "";
     if (!replyText) {
       // 2026-10-07（GC-27）：空の返事を「（返答を生成できませんでした）」として保存しない
@@ -2805,6 +2824,7 @@ function showAiFallbackNotice_(text, retryFn) {
   }
   elements.chatTimeline.appendChild(el);
   scrollToBottom();
+  return el;
 }
 
 function handleBuiltinResponse(text, failReason) {
@@ -2902,7 +2922,7 @@ function handleBuiltinResponse(text, failReason) {
   }
 
   // 2026-10-07（GC-27）：AI の失敗で定型の返事にしたときは、ログに残さず注意書きを添える
-  addMessageBubble("bot", reply, null, !failReason);
+  addMessageBubble("bot", reply, null, !failReason, !failReason);
   if (failReason) showAiFallbackNotice_(`⚠️ AI に接続できませんでした（${failReason}）。定型の返事を表示しています（ログには残しません）`);
   speak(reply);
 }
@@ -3018,7 +3038,7 @@ async function handleQuickAction(action) {
       const payload = {
         system_instruction: { parts: [{ text: `${getSystemPrompt_()}${weatherLine}${coachingInstruction}` }] },
         contents: contents,
-        generationConfig: { maxOutputTokens: 1000 } // 2026-10-07：Gemini 3.6 Flash 以降で temperature は非推奨（Googleから通知メール）のため送らない
+        generationConfig: { maxOutputTokens: 2048 } // 2026-10-07：Gemini 3.6 Flash 以降で temperature は非推奨（Googleから通知メール）のため送らない
       };
 
       // 2026-10-07：2秒の打ち切りでほぼ毎回定型文になっていたため、1モデル15秒に。キーはヘッダーで送る
@@ -3040,7 +3060,7 @@ async function handleQuickAction(action) {
             const data = await res.json();
             if (!data.error) {
               const parts = data?.candidates?.[0]?.content?.parts || [];
-              const textPart = parts.find(p => !p.thought && p.text) || parts[parts.length - 1];
+              const textPart = parts.find(p => !p.thought && p.text); // 2026-10-07（2回目）：thought を拾わない
               reply = textPart?.text?.trim() || "";
               if (data?.usageMetadata?.totalTokenCount) {
                 recordTokenUsage(data.usageMetadata.totalTokenCount);
@@ -3073,7 +3093,7 @@ async function handleQuickAction(action) {
 
   // 2026-10-07（GC-27）：AI を使うはずだったのに失敗したときは、ログに残さず注意書きを添える
   const aiFailedQuick = usedFallback && quickFail;
-  addMessageBubble("bot", reply, null, !aiFailedQuick);
+  addMessageBubble("bot", reply, null, !aiFailedQuick, !aiFailedQuick);
   if (aiFailedQuick) showAiFallbackNotice_(`⚠️ AI に接続できませんでした（${quickFail}）。定型の返事を表示しています（ログには残しません）`);
   speak(reply);
 }
@@ -3934,7 +3954,9 @@ async function syncFromCloud(force = false) {
         // 削除を送信待ちのメモは復活させない（Step3.5f：判定は未送信キューだけで行う。
         // 旧方式の削除マーカーは、破棄・未反映の削除でもマーカーが残り、Vaultにあるメモが3日間見えなくなっていた）
         if (hasPendingMemoDelete_(cm.text)) return;
-        const local = state.memos.find(m => (m.serverId && m.serverId === cm.id) || m.text === cm.text);
+        // 2026-10-07（2回目）：30日分になって同じ文のメモが増えたため、id で照合する（文で照合するのは、まだ id の無いこの端末のメモだけ）
+        const local = state.memos.find(m => (m.serverId && m.serverId === cm.id)) ||
+          state.memos.find(m => !m.serverId && m.text === cm.text);
         if (!local) {
           state.memos.unshift({
             id: cm.id || Date.now().toString(),
@@ -3949,6 +3971,10 @@ async function syncFromCloud(force = false) {
           if (cm.id && local.serverId !== cm.id) {
             local.serverId = cm.id;
             local.serverDate = cm.date || todayYmd;
+            memoChanged = true;
+          }
+          if (!local.serverDate && cm.date) { // 2026-10-07（2回目）：古いメモの日付を補う（他の端末での削除が届くように）
+            local.serverDate = cm.date;
             memoChanged = true;
           }
           // Mac版などで切り替えたアーカイブ状態を反映（こちらの変更が未送信の間は上書きしない）
@@ -3989,6 +4015,7 @@ const MEMO_RANGE_DAYS = 30; // 2026-10-07：何日前までのメモを出すか
 const MEMO_TOMBSTONE_KEY = "companion_memo_tombstones";
 // 2026-10-07：回数で捨てるのをやめた（送れるまで残す。破棄は「未送信」をタップしたときの確認からだけ）
 const OUTBOX_FAILED_KEY = "companion_outbox_failed";
+const OUTBOX_STUCK_MS = 24 * 60 * 60 * 1000; // 2026-10-07（2回目）
 let outboxMem = null;
 let outboxFlushing = false;
 const syncStatus = { state: "unknown", lastOkAt: null };
@@ -4155,6 +4182,17 @@ async function flushOutboxInner_() {
       // BUSY・サーバー内部エラー等：後で再送（2026-10-07：回数で捨てない）
       op.tries = (op.tries || 0) + 1;
       op.lastError = "サーバー: " + ((res && (res.code || res.error)) || "不明な応答");
+      // 2026-10-07（2回目、きのぴぃ決定 A）：サーバーエラーが24時間続いた1件は「書けなかった」一覧へ移し、後ろを止めない
+      if (res) {
+        if (!op.firstServerErrorAt) op.firstServerErrorAt = Date.now();
+        if (Date.now() - op.firstServerErrorAt > OUTBOX_STUCK_MS) {
+          console.error("outbox op moved to failed after 24h:", op.action, res.error || res.code);
+          ob.shift();
+          addFailedOp_(op, "24時間送れなかった: " + (res.error || res.code || ""));
+          saveOutbox_();
+          continue;
+        }
+      }
       setSyncStatus_(res ? "servererror" : "offline");
       saveOutbox_();
       break;
@@ -4223,9 +4261,27 @@ function showFailedOps_() {
     const p = f.params || {};
     return `・${names[f.action] || f.action}（${p.date || ""} ${p.time || ""}）：${String(p.text || "").slice(0, 200)}`;
   });
-  showAiFallbackNotice_(`⚠️ サーバーが受け付けず、Vault に書けなかった ${list.length} 件です（必要なら手で残してください）\n` + lines.join("\n"));
-  try { localStorage.removeItem(OUTBOX_FAILED_KEY); } catch (e) {}
-  renderSyncStatus();
+  // 2026-10-07（2回目）：表示しただけでは消さない。「確認した」を押したときだけ一覧を空にする
+  const el = showAiFallbackNotice_(`⚠️ サーバーが受け付けず、Vault に書けなかった ${list.length} 件です（必要なら手で残してください）\n` + lines.join("\n"));
+  if (!el) return true;
+  const copyBtn = document.createElement("button");
+  copyBtn.textContent = "コピー";
+  copyBtn.style.cssText = "margin-left:6px;font-size:11px;";
+  copyBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    try { navigator.clipboard.writeText(lines.join("\n")); copyBtn.textContent = "コピーしました"; } catch (err) {}
+  });
+  const doneBtn = document.createElement("button");
+  doneBtn.textContent = "確認した（一覧から消す）";
+  doneBtn.style.cssText = "margin-left:6px;font-size:11px;";
+  doneBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    try { localStorage.removeItem(OUTBOX_FAILED_KEY); } catch (err) {}
+    el.remove();
+    renderSyncStatus();
+  });
+  el.appendChild(copyBtn);
+  el.appendChild(doneBtn);
   return true;
 }
 
