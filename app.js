@@ -1170,12 +1170,12 @@ function setupEventListeners() {
     }
 
     const extEl = document.getElementById("voice-external-tts-toggle");
-    const savedExt = state.voiceExternalTts;
-    if (extEl) state.voiceExternalTts = extEl.checked; // 2026-10-07（2回目）：保存前のチェックでも試聴できるように
+    // 2026-10-07（3回目）：保存前のチェックの値を試聴にだけ渡す（state を書き換えない。試聴中に保存しても設定が戻らない）
+    const previewExt = extEl ? extEl.checked : state.voiceExternalTts;
     let previewNote = "";
     try {
       if (!speakerId.startsWith("os") && speakerId !== "os") {
-        await speakWithVoicevox(sampleText, speakerId, rate, pitch);
+        await speakWithVoicevox(sampleText, speakerId, rate, pitch, previewExt);
       } else {
         speakWithWebSpeech(sampleText, rate, pitch, speakerId);
       }
@@ -1183,9 +1183,8 @@ function setupEventListeners() {
       console.warn("Voice preview error:", err && err.message);
       // 2026-10-07（2回目）：無音で終わらせず、予備の端末の声で鳴らす
       speakWithWebSpeech(sampleText, state.voiceFallbackRate, state.voiceFallbackPitch, state.voiceFallbackSpeaker || "os:Otoya");
-      previewNote = state.voiceExternalTts ? "⚠️ VOICEVOX に届かず端末の声で再生" : "⚠️ 外部の音声合成がオフのため端末の声で再生";
+      previewNote = previewExt ? "⚠️ VOICEVOX に届かず端末の声で再生" : "⚠️ 外部の音声合成がオフのため端末の声で再生";
     } finally {
-      state.voiceExternalTts = savedExt;
       elements.btnVoicePreview.textContent = previewNote || originalText;
       elements.btnVoicePreview.disabled = false;
       if (previewNote) setTimeout(() => { elements.btnVoicePreview.textContent = originalText; }, 4000);
@@ -1443,7 +1442,7 @@ async function processRecordedAudio(audioBlob, mimeType) {
             recordTokenUsage(data.usageMetadata.totalTokenCount);
           }
 
-          const rawJson = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+          const rawJson = (data?.candidates?.[0]?.content?.parts || []).find(p => !p.thought && p.text)?.text; // 2026-10-07（3回目）：thought を拾わない
           if (!rawJson) throw new Error("空の返事");
           let parsed;
           try { parsed = JSON.parse(rawJson); } catch (pe) { throw new Error("JSON parse error"); }
@@ -1708,7 +1707,7 @@ function getPwaAudioContext() {
   return pwaAudioContextInstance;
 }
 
-async function speakWithVoicevox(text, speakerId, rate = state.voiceRate, pitch = state.voicePitch) {
+async function speakWithVoicevox(text, speakerId, rate = state.voiceRate, pitch = state.voicePitch, allowExternal = state.voiceExternalTts) {
   // 既存の再生音声を即時完全停止（多重再生・割り込み防止）
   if (state.currentAudioSource) {
     try { state.currentAudioSource.stop(); } catch (e) {}
@@ -1753,7 +1752,7 @@ async function speakWithVoicevox(text, speakerId, rate = state.voiceRate, pitch 
   } catch (e) {}
 
   // 2026-10-07：外部へ送るのは設定でオンにしたときだけ。オフなら呼び出し元が端末の音声に切り替える
-  if (!arrayBuffer && !state.voiceExternalTts) {
+  if (!arrayBuffer && !allowExternal) { // 2026-10-07（3回目）：試聴は画面のチェックの値を引数で受け取る
     throw new Error("ローカルの VOICEVOX が無く、外部の音声合成はオフです");
   }
 
@@ -2809,6 +2808,10 @@ function aiFailReason_(err) {
   if (/JSON/.test(msg)) return "返事の形が不正";
   return "通信エラー";
 }
+// 2026-10-07（3回目）：空の返事のときは「接続できなかった」と言わない
+function aiFailHead_(reason) {
+  return reason === "空の返事" ? "⚠️ AI の返事が空でした。" : `⚠️ AI に接続できませんでした（${reason}）。`;
+}
 function showAiFallbackNotice_(text, retryFn) {
   if (!elements.chatTimeline) return;
   const el = document.createElement("div");
@@ -2923,7 +2926,7 @@ function handleBuiltinResponse(text, failReason) {
 
   // 2026-10-07（GC-27）：AI の失敗で定型の返事にしたときは、ログに残さず注意書きを添える
   addMessageBubble("bot", reply, null, !failReason, !failReason);
-  if (failReason) showAiFallbackNotice_(`⚠️ AI に接続できませんでした（${failReason}）。定型の返事を表示しています（ログには残しません）`);
+  if (failReason) showAiFallbackNotice_(`${aiFailHead_(failReason)}定型の返事を表示しています（ログには残しません）`);
   speak(reply);
 }
 
@@ -3094,7 +3097,7 @@ async function handleQuickAction(action) {
   // 2026-10-07（GC-27）：AI を使うはずだったのに失敗したときは、ログに残さず注意書きを添える
   const aiFailedQuick = usedFallback && quickFail;
   addMessageBubble("bot", reply, null, !aiFailedQuick, !aiFailedQuick);
-  if (aiFailedQuick) showAiFallbackNotice_(`⚠️ AI に接続できませんでした（${quickFail}）。定型の返事を表示しています（ログには残しません）`);
+  if (aiFailedQuick) showAiFallbackNotice_(`${aiFailHead_(quickFail)}定型の返事を表示しています（ログには残しません）`);
   speak(reply);
 }
 
@@ -3956,7 +3959,7 @@ async function syncFromCloud(force = false) {
         if (hasPendingMemoDelete_(cm.text)) return;
         // 2026-10-07（2回目）：30日分になって同じ文のメモが増えたため、id で照合する（文で照合するのは、まだ id の無いこの端末のメモだけ）
         const local = state.memos.find(m => (m.serverId && m.serverId === cm.id)) ||
-          state.memos.find(m => !m.serverId && m.text === cm.text);
+          state.memos.find(m => !m.serverId && m.text === cm.text && (!m.serverDate || m.serverDate === (cm.date || todayYmd))); // 2026-10-07（3回目）：日付も同じときだけ
         if (!local) {
           state.memos.unshift({
             id: cm.id || Date.now().toString(),
@@ -3989,9 +3992,10 @@ async function syncFromCloud(force = false) {
       const cloudIds = new Set(data.memos.map(cm => cm.id));
       const cloudTexts = new Set(data.memos.map(cm => cm.text));
       const beforeCount = state.memos.length;
+      // 2026-10-07（3回目）：id で判定する（同じ文のメモが30日の中にあると、消えたメモが残っていた）
       state.memos = state.memos.filter(m => !(
         m.serverId && m.serverDate &&
-        !cloudIds.has(m.serverId) && !cloudTexts.has(m.text) &&
+        !cloudIds.has(m.serverId) &&
         !hasPendingMemoOp_(m.text)
       ));
       if (state.memos.length !== beforeCount) memoChanged = true;
@@ -4185,7 +4189,7 @@ async function flushOutboxInner_() {
       // 2026-10-07（2回目、きのぴぃ決定 A）：サーバーエラーが24時間続いた1件は「書けなかった」一覧へ移し、後ろを止めない
       if (res) {
         if (!op.firstServerErrorAt) op.firstServerErrorAt = Date.now();
-        if (Date.now() - op.firstServerErrorAt > OUTBOX_STUCK_MS) {
+        if (Date.now() - op.firstServerErrorAt > OUTBOX_STUCK_MS && (op.tries || 0) >= 5) { // 2026-10-07（3回目）：5回以上も条件に
           console.error("outbox op moved to failed after 24h:", op.action, res.error || res.code);
           ob.shift();
           addFailedOp_(op, "24時間送れなかった: " + (res.error || res.code || ""));
@@ -4262,14 +4266,22 @@ function showFailedOps_() {
     return `・${names[f.action] || f.action}（${p.date || ""} ${p.time || ""}）：${String(p.text || "").slice(0, 200)}`;
   });
   // 2026-10-07（2回目）：表示しただけでは消さない。「確認した」を押したときだけ一覧を空にする
+  // 2026-10-07（3回目）：前に出した一覧は消してから出す（タップのたびに増えないように）
+  document.querySelectorAll(".failed-ops-notice").forEach(x => x.remove());
   const el = showAiFallbackNotice_(`⚠️ サーバーが受け付けず、Vault に書けなかった ${list.length} 件です（必要なら手で残してください）\n` + lines.join("\n"));
   if (!el) return true;
+  el.classList.add("failed-ops-notice");
+  // コピーは全文（画面の一覧は200字で切っている）
+  const fullText = list.map(f => {
+    const p = f.params || {};
+    return `・${names[f.action] || f.action}（${p.date || ""} ${p.time || ""}）：${String(p.text || "")}`;
+  }).join("\n");
   const copyBtn = document.createElement("button");
   copyBtn.textContent = "コピー";
   copyBtn.style.cssText = "margin-left:6px;font-size:11px;";
   copyBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    try { navigator.clipboard.writeText(lines.join("\n")); copyBtn.textContent = "コピーしました"; } catch (err) {}
+    try { navigator.clipboard.writeText(fullText); copyBtn.textContent = "コピーしました"; } catch (err) {}
   });
   const doneBtn = document.createElement("button");
   doneBtn.textContent = "確認した（一覧から消す）";
