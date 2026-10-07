@@ -1398,7 +1398,7 @@ async function processRecordedAudio(audioBlob, mimeType) {
               ]
             }],
             generationConfig: {
-              temperature: 0.7,
+              // 2026-10-07：Gemini 3.6 Flash 以降で temperature は非推奨（Googleから通知メール）のため送らない
               maxOutputTokens: 1000,
               response_mime_type: "application/json",
               response_schema: {
@@ -2702,7 +2702,7 @@ async function callGeminiApi(userPrompt) {
     },
     contents: contents,
     generationConfig: {
-      temperature: 0.7,
+      // 2026-10-07：Gemini 3.6 Flash 以降で temperature は非推奨（Googleから通知メール）のため送らない
       maxOutputTokens: 1000
     }
   };
@@ -3018,7 +3018,7 @@ async function handleQuickAction(action) {
       const payload = {
         system_instruction: { parts: [{ text: `${getSystemPrompt_()}${weatherLine}${coachingInstruction}` }] },
         contents: contents,
-        generationConfig: { temperature: 0.7, maxOutputTokens: 1000 }
+        generationConfig: { maxOutputTokens: 1000 } // 2026-10-07：Gemini 3.6 Flash 以降で temperature は非推奨（Googleから通知メール）のため送らない
       };
 
       // 2026-10-07：2秒の打ち切りでほぼ毎回定型文になっていたため、1モデル15秒に。キーはヘッダーで送る
