@@ -3987,6 +3987,12 @@ async function syncFromCloud(force = false) {
           }
         }
       });
+      // 2026-10-09（4回目・追補）：前の版で二重になったメモを片づける
+      const deduped = dropOrphanDuplicateMemos_(state.memos, data.memos, todayYmd, hasPendingMemoSave_);
+      if (deduped.length !== state.memos.length) {
+        state.memos = deduped;
+        memoChanged = true;
+      }
       // 他の端末で削除されたメモ・30日より前のメモを、この端末からも消す（Step3.5e、2026-10-07 範囲を30日に）
       // 対象：サーバーで確認済み（serverId あり）で、クラウドの一覧から消えたか範囲外になり、この端末の変更も送信待ちでないもの
       const cloudIds = new Set(data.memos.map(cm => cm.id));
@@ -4432,6 +4438,27 @@ function findLocalMemoForCloud_(memos, cm, todayYmd) {
   const cmText = normalizeMemoText_(cm.text);
   const cmDate = cm.date || todayYmd;
   return memos.find(m => !m.serverId && normalizeMemoText_(m.text) === cmText && (!m.serverDate || m.serverDate === cmDate));
+}
+
+// 2026-10-09（4回目・追補）：送信待ちのメモ追加があるか（本文はそろえた形で比べる）
+function hasPendingMemoSave_(text) {
+  const want = normalizeMemoText_(text);
+  return loadOutbox_().some(op => op.action === "saveMemo" && op.params && normalizeMemoText_(op.params.text) === want);
+}
+
+// 2026-10-09（4回目・追補）：前の版で二重になったメモを片づける。id の無い端末のメモで、同じ本文・日付のメモが
+// サーバーにあり、それが別の端末のメモ（id あり）と結び付いているものは落とす（送信待ちの追加は残す）
+function dropOrphanDuplicateMemos_(memos, cloudMemos, todayYmd, isPendingSave) {
+  const keyOf = (date, text) => (date || todayYmd) + "|" + normalizeMemoText_(text);
+  const cloudKeys = new Set(cloudMemos.map(cm => keyOf(cm.date, cm.text)));
+  return memos.filter(m => {
+    if (m.serverId) return true;
+    const key = keyOf(m.serverDate, m.text);
+    if (!cloudKeys.has(key)) return true;
+    const twin = memos.some(x => x !== m && x.serverId && keyOf(x.serverDate, x.text) === key);
+    if (!twin) return true;
+    return isPendingSave(m.text);
+  });
 }
 
 function hasPendingMemoDelete_(text) {
