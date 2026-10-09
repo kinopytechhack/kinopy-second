@@ -3160,6 +3160,7 @@ function playChime() {
 // メモ管理
 // ==========================================
 function addMemo(content) {
+  content = normalizeMemoText_(content); // 2026-10-09（4回目）：GAS と同じ1行の形で持つ・送る
   const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const memo = {
     id: Date.now().toString(),
@@ -3958,8 +3959,7 @@ async function syncFromCloud(force = false) {
         // 旧方式の削除マーカーは、破棄・未反映の削除でもマーカーが残り、Vaultにあるメモが3日間見えなくなっていた）
         if (hasPendingMemoDelete_(cm.text)) return;
         // 2026-10-07（2回目）：30日分になって同じ文のメモが増えたため、id で照合する（文で照合するのは、まだ id の無いこの端末のメモだけ）
-        const local = state.memos.find(m => (m.serverId && m.serverId === cm.id)) ||
-          state.memos.find(m => !m.serverId && m.text === cm.text && (!m.serverDate || m.serverDate === (cm.date || todayYmd))); // 2026-10-07（3回目）：日付も同じときだけ
+        const local = findLocalMemoForCloud_(state.memos, cm, todayYmd); // 2026-10-09（4回目）：本文はそろえた形で照合
         if (!local) {
           state.memos.unshift({
             id: cm.id || Date.now().toString(),
@@ -4419,12 +4419,29 @@ function removeMemoTombstone_(text) {
   try { localStorage.setItem(MEMO_TOMBSTONE_KEY, JSON.stringify(t)); } catch (e) {}
 }
 
+// 2026-10-09（4回目）：メモの本文を GAS と同じ形にそろえる（前後の空白を落とし、改行を空白に）。
+// GAS は保存のときにこの形にするので、照合はいつもこの形で行う（複数行のメモが二重に並ぶのを防ぐ）
+function normalizeMemoText_(text) {
+  return String(text == null ? "" : text).trim().replace(/\r?\n/g, " ");
+}
+
+// サーバーのメモ（cm）に当たる端末のメモを探す。id があれば id だけで、無ければ本文（そろえた形）＋日付で
+function findLocalMemoForCloud_(memos, cm, todayYmd) {
+  const byId = memos.find(m => m.serverId && m.serverId === cm.id);
+  if (byId) return byId;
+  const cmText = normalizeMemoText_(cm.text);
+  const cmDate = cm.date || todayYmd;
+  return memos.find(m => !m.serverId && normalizeMemoText_(m.text) === cmText && (!m.serverDate || m.serverDate === cmDate));
+}
+
 function hasPendingMemoDelete_(text) {
-  return loadOutbox_().some(op => op.action === "deleteMemo" && op.params && op.params.text === text);
+  const want = normalizeMemoText_(text);
+  return loadOutbox_().some(op => op.action === "deleteMemo" && op.params && normalizeMemoText_(op.params.text) === want);
 }
 
 function hasPendingMemoOp_(text) {
-  return loadOutbox_().some(op => (op.action === "updateMemo" || op.action === "deleteMemo") && op.params && op.params.text === text);
+  const want = normalizeMemoText_(text);
+  return loadOutbox_().some(op => (op.action === "updateMemo" || op.action === "deleteMemo") && op.params && normalizeMemoText_(op.params.text) === want);
 }
 
 // メモが属するログの日付（サーバーのメモは日付ごとのログファイルにある）
