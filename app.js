@@ -944,6 +944,7 @@ function setupEventListeners() {
     if (e) e.stopPropagation();
     if (elements.memoPanel) elements.memoPanel.classList.add("hidden");
     loadSettingsToUI();
+    settingsOpenSnap_ = settingsSnapshot_(); // 2026-10-09（8回目）
     if (elements.settingsPanel) elements.settingsPanel.classList.remove("hidden");
   };
 
@@ -3619,8 +3620,14 @@ function settingsSnapshot_() {
   return JSON.stringify(keys.map(k => state[k]));
 }
 
+// 2026-10-09（8回目）：設定画面を開いたときの値。✕で閉じたときの「変更なし」は、これと比べる
+// （スライダーは動かした時点で値が変わるので、保存を始めた時点の値と比べると、変更を見落としていた）
+let settingsOpenSnap_ = null;
+function settingsUnchangedSinceOpen_() {
+  return settingsOpenSnap_ !== null && settingsSnapshot_() === settingsOpenSnap_;
+}
+
 function saveSettings(showBubble = true) {
-  const beforeSnap = settingsSnapshot_(); // 2026-10-09（低まとめ）
   state.geminiEnabled = elements.geminiApiToggle.checked;
   state.geminiApiKey = elements.geminiApiKey.value.trim();
   if (elements.kumapyWebAppUrlInput) {
@@ -3668,7 +3675,8 @@ function saveSettings(showBubble = true) {
   }
   // 2026-10-09（低まとめ）：✕で閉じて何も変えていなければ、保存の時刻を進めずクラウドにも送らない
   // （別の端末で新しくした設定を、この端末の古い値で上書きしないため）
-  if (!showBubble && settingsSnapshot_() === beforeSnap) return;
+  if (!showBubble && settingsUnchangedSinceOpen_()) return; // 2026-10-09（8回目）：開いたときの値と比べる
+  settingsOpenSnap_ = null;
 
   localStorage.setItem("gemini_enabled", state.geminiEnabled);
   localStorage.setItem("gemini_api_key", state.geminiApiKey);
