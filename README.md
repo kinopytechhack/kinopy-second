@@ -77,3 +77,6 @@ iPhoneや各種ブラウザからいつでもアクセスできる「Kinopy's Se
 - 同期サーバー（gas-second-sync）へは、読み込みも書き込みも POST の本文で送る（`postGas_`。Mac 版・他のアプリと同じ形）。GET・JSONP の経路は消した（POST が失敗しても URL に載せる経路には戻らない）
 - 以前は GET（だめなら JSONP）で、同期の合言葉が URL のパラメータに載っていた（Step3.5g の「iPhone で POST の応答が遅い」への対策だった）
 - 次の段階：iPhone・Mac の Chrome・会社 PC の拡張で新しい版を開いたあと、`showSyncTokenUsage`（gas-second-sync の Code.gs）で GET・JSONP の回数が増えていないことを確かめ、gas-second-sync で URL の合言葉を断る。合言葉の入れ替えはしない（きのぴぃ決定 B）
+
+## 2026-10-09 Claude 再レビュー11回目の低（`app.js?v=20261009-claude11`）
+- 同期 URL の欄に `?token=` などのパラメータが付いていても取り除いて使い・保存する（`sanitizeSyncUrl_`。保存済みの値も書き直す）

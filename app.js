@@ -80,7 +80,7 @@ const state = {
   kumapyAccessKey: localStorage.getItem("kumapy_access_key") || "",
   // Kumapy からの取得の状態：'' / 'ok'（API）/ 'nokey'（合言葉未入力→CSV）/ 'unauthorized'（合言葉違い→CSV）/ 'error'（通信など→CSV）
   kumapyApiState: "",
-  syncGasUrl: localStorage.getItem("companion_sync_gas_url") || DEFAULT_CONFIG.syncGasUrl,
+  syncGasUrl: sanitizeSyncUrl_(localStorage.getItem("companion_sync_gas_url")) || DEFAULT_CONFIG.syncGasUrl, // 2026-10-09（11回目の低）
   // 同期の合言葉（この端末だけに保存。2026-09-30 ステップ4-3：既定値は廃止。未入力なら送らず「未同期（合言葉が未入力）」）
   syncToken: localStorage.getItem("companion_sync_token") || "",
   // システムプロンプト（同期サーバーの getPersona から受け取った全文。ステップ4-3）
@@ -572,7 +572,15 @@ function loadSettingsToUI() {
   state.geminiEnabled = localStorage.getItem("gemini_enabled") !== "false";
   state.kumapyWebAppUrl = loadKumapyWebAppUrl_();
   state.kumapyAccessKey = localStorage.getItem("kumapy_access_key") || "";
-  state.syncGasUrl = localStorage.getItem("companion_sync_gas_url") || DEFAULT_CONFIG.syncGasUrl;
+  {
+    // 2026-10-09（11回目の低）：保存済みの URL にパラメータ（?token= など）が付いていれば、取り除いて保存し直す
+    const rawSyncUrl = localStorage.getItem("companion_sync_gas_url") || "";
+    const cleanSyncUrl = sanitizeSyncUrl_(rawSyncUrl);
+    if (rawSyncUrl && cleanSyncUrl !== rawSyncUrl) {
+      try { localStorage.setItem("companion_sync_gas_url", cleanSyncUrl); } catch (e) {}
+    }
+    state.syncGasUrl = sanitizeSyncUrl_(localStorage.getItem("companion_sync_gas_url")) || DEFAULT_CONFIG.syncGasUrl;
+  }
   state.syncToken = localStorage.getItem("companion_sync_token") || "";
   state.voiceEnabled = localStorage.getItem("voice_enabled") !== "false";
   state.voiceSpeaker = localStorage.getItem("voice_speaker") || "11";
@@ -3647,7 +3655,7 @@ function saveSettings(showBubble = true) {
     state.kumapyAccessKey = nextKey;
   }
   if (elements.companionSyncUrlInput) {
-    state.syncGasUrl = elements.companionSyncUrlInput.value.trim();
+    state.syncGasUrl = sanitizeSyncUrl_(elements.companionSyncUrlInput.value); // 2026-10-09（11回目の低）
   }
   if (elements.companionSyncTokenInput) {
     state.syncToken = elements.companionSyncTokenInput.value.trim();
@@ -3754,6 +3762,12 @@ async function fetchGasJsonp(action, paramsObj = {}) {
     // 「未同期」は書き込み（未送信キュー）が送れないときだけ出す（送れていない発言があるかどうかが大事なため）
     throw err;
   }
+}
+
+// 2026-10-09（11回目の低）：同期 URL にはパラメータを付けない（?token= などが付いていると合言葉が端末に平文で残り、
+// gas-second-sync Ver.20 では URL に合言葉があると正しい値でも断られる）。? と # 以降を取り除く
+function sanitizeSyncUrl_(url) {
+  return String(url || "").trim().split("#")[0].split("?")[0];
 }
 
 // 2026-10-09：合言葉を URL に載せない（Mac 版・他のアプリと同じ形）。読み込みも書き込みも POST の本文で送る。
