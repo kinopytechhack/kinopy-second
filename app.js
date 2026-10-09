@@ -394,6 +394,38 @@ document.addEventListener("DOMContentLoaded", () => {
     unlockAudioContext();
   };
   unlockEvents.forEach(evt => document.addEventListener(evt, unlocker, { passive: true }));
+
+  // 2026-10-09（G-805）：Matt のなつき度・記憶・節目・朝夜の声かけ（companion_memory.js）。
+  // 記憶は companion_settings.json の companionMemory。書き込みは gas-second-sync の saveSettings だけ
+  if (window.KinopyBond) {
+    window.KinopyBond.start({
+      kind: "pwa",
+      today: () => getTodayYmd(),
+      aiAvailable: () => Boolean(state.geminiEnabled && state.geminiApiKey),
+      getApiKey: () => state.geminiApiKey,
+      recordTokens: (n) => recordTokenUsage(n),
+      isBusy: () => Boolean((elements.userInput && elements.userInput.value.trim()) || document.getElementById("pwa-live-typing-indicator")),
+      say: (text, opt) => {
+        const log = !(opt && opt.log === false);
+        addMessageBubble("bot", text, null, log, log);
+        speak(text);
+      },
+      notifyFallback: (text) => showAiFallbackNotice_(text),
+      getFacts: () => ({ weather: state.todayWeather, sleep: state.todaySleep, tasks: state.todayAllTasks }),
+      ensureContext: () => Promise.allSettled([fetchKumapyTasks(), fetchDailyContext()]),
+      cloudLoad: async () => {
+        const r = await fetchGasJsonpRaw_("getSettings", {}, { fetchTimeout: 15000 });
+        if (!r || !r.success) return undefined; // 読めなかった
+        return (r.settings && r.settings.companionMemory) || null;
+      },
+      cloudSave: (mem) => sendGasWrite_("saveSettings", { settings: JSON.stringify({ companionMemory: mem }), clientId: newClientId_() }),
+      fetchLogs: async (ymd) => {
+        const r = await fetchGasJsonpRaw_("getLogs", { date: ymd }, { fetchTimeout: 20000 });
+        if (!r || !r.success) throw new Error((r && (r.code || r.error)) || "getLogs failed");
+        return r.messages || [];
+      }
+    }).catch(e => console.warn("[Bond] start failed:", e && e.message));
+  }
 });
 
 // ==========================================
@@ -2636,6 +2668,8 @@ function addMessageBubble(role, text, timeStr, shouldSave = true, addToHistory =
 
     // GASクラウド (Google Drive / Vault) への同期（未送信キュー経由・Step3.5）
     syncAppendLogToGas(role, text, timeStr);
+    // 2026-10-09（G-805）：自分の発言を数える（なつき度・節目）
+    if (role === "user" && window.KinopyBond) window.KinopyBond.onUserMessage();
   }
 }
 
@@ -2731,7 +2765,9 @@ async function callGeminiApi(userPrompt) {
 - ユーザーの話を受け止めて共感し、思考をほぐす客観的な問いかけ（「一番引っかかっているのは何？」「本当はどうなると最高？」など）を1つだけ投げかけてください。
 - もしユーザーの思考がまとまってきた時や、要約・解決策を求めている時は、スッキリ3行以内の箇条書き（【要点整理】現状・ボトルネック・次の最小の1歩）でまとめ、メモ保存を勧めてください。` : '';
 
-  const dynamicPrompt = `${getSystemPrompt_()}${taskLine}${weatherLine}${sleepLine}${coachingInstruction}`;
+  // 2026-10-09（G-805 F5）：会話の長さ・掘り下げ・なつき度・不在日数・節目・この前の話（companion_memory.js）
+  const bondContext = window.KinopyBond ? window.KinopyBond.contextBlock() : "";
+  const dynamicPrompt = `${getSystemPrompt_()}${bondContext}${taskLine}${weatherLine}${sleepLine}${coachingInstruction}`;
 
   const payload = {
     system_instruction: {
@@ -3393,6 +3429,7 @@ async function fetchKumapyTasksCore_() {
 
     // 全タスクを保持
     state.todayAllTasks = tasks;
+    if (window.KinopyBond) window.KinopyBond.onTasks(tasks); // 2026-10-09（G-805）：完了数（なつき度・節目）
 
     const running = tasks.find(t => t.status === "実行中");
 
@@ -3729,7 +3766,7 @@ function saveSettings(showBubble = true) {
   updateBadgeState();
   if (showBubble) {
     elements.settingsPanel.classList.add("hidden");
-    addMessageBubble("bot", "設定を保存したよ！ありがとう！", null, true);
+    addMessageBubble("bot", "設定、保存しました。", null, true); // 2026-10-09：Matt の口調に
   }
   fetchKumapyTasks();
   checkKumapyConnection_(); // 2026-09-30（ステップ4-2）: 合言葉を入れ直したらすぐ確かめる

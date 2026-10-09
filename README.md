@@ -84,3 +84,10 @@ iPhoneや各種ブラウザからいつでもアクセスできる「Kinopy's Se
 ## 2026-10-09 Claude 再レビュー（低の残り、`app.js?v=20261009-claude12`）
 - 設定をクラウドに保存できたら、サーバーの保存時刻を「この端末で保存した時刻」にする（クラウドの updatedAt と同じ時計で比べる）
 - 2つのタブで開いていても、未送信の一覧を上書きしない（保存のときと `storage` イベントで、ほかのタブの分を足し合わせる。同じ書き込みはサーバーが clientId で1回だけ書く）。割り切り：破棄はほかのタブには伝わらないので、ほかのタブを閉じてから破棄する（確認文に明記）
+
+## 2026-10-09 Matt のなつき度・記憶・節目・声かけ（G-805、`companion_memory.js?v=20261009-bond1`・`app.js?v=20261009-bond1`）
+- 新しいファイル `companion_memory.js`（desktop-second と同じ中身。公開されるので個人の情報・合言葉は書かない）。`app.js` は呼び出しを足しただけ（DOMContentLoaded の最後で `KinopyBond.start`／発言・完了タスク／`callGeminiApi` の文脈）
+- 記憶は localStorage `companion_memory_v1` と、同期サーバーの saveSettings で `companion_settings.json` の `companionMemory`（getSettings で読む）。端末ごとの会話数は端末ID（`companion_memory_device_id`）で分けて足し合わせる
+- 内容（Lv・節目・不在反応・朝夜の声かけ・この前の話・会話の長さ）は desktop-second の README の同じ節と同じ
+- 設定保存の返事を「設定、保存しました。」に（Matt の口調）
+- 割り切り：companionMemory を保存すると設定 JSON の `updatedAt` も進む。この端末の設定の保存がクラウドに届かないまま、ほかの端末が記憶を書くと、次の同期でこの端末の設定がクラウドの値に戻ることがある（設定の保存が失敗したときだけ）。直すなら gas-second-sync に記憶専用の口を作る
