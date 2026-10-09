@@ -3471,6 +3471,12 @@ async function fetchKumapyTasksCore_() {
   }
 }
 
+// 2026-10-09（10回目の低）：その日のまとめの天気・睡眠は、当日分だけを使う。
+// GAS は当日分が無いと前日の値に stale を付けて返すので、それは「本日の気象」「昨夜の睡眠」として使わない（空なら前日の値も消す）
+function freshContextValue_(v) {
+  return v && !v.stale ? v : null;
+}
+
 // 📦 日次サマリ一括取得・キャッシュ（1日1回）
 async function fetchDailyContext(force = false) {
   const ymd = getTodayYmd();
@@ -3486,8 +3492,8 @@ async function fetchDailyContext(force = false) {
       const res = await fetchGasJsonp('getDailyContext', { date: ymd });
       if (res && res.success && res.context) {
         const ctx = res.context;
-        if (ctx.weather) state.todayWeather = ctx.weather;
-        if (ctx.sleep) state.todaySleep = ctx.sleep;
+        state.todayWeather = freshContextValue_(ctx.weather); // 2026-10-09（10回目の低）
+        state.todaySleep = freshContextValue_(ctx.sleep);
         if (ctx.morningPaper) state.latestMorningPaper = ctx.morningPaper;
         state.dailyContextFetchDate = ymd;
         state.dailyContextUpdatedAt = ctx.updatedAt || new Date().toISOString();
