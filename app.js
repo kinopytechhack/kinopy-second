@@ -3756,72 +3756,36 @@ async function fetchGasJsonp(action, paramsObj = {}) {
   }
 }
 
-async function fetchGasJsonpRaw_(action, paramsObj = {}, opts = {}) {
-  if (!state.syncGasUrl) {
-    throw new Error("No syncGasUrl");
-  }
-
+// 2026-10-09：合言葉を URL に載せない（Mac 版・他のアプリと同じ形）。読み込みも書き込みも POST の本文で送る。
+// 以前は GET（だめなら JSONP）で、合言葉が URL のパラメータに載っていた。POST が失敗しても URL に載せる経路には戻らない
+async function postGas_(action, paramsObj, timeoutMs) {
+  if (!state.syncGasUrl) throw new Error("No syncGasUrl");
   const token = getEffectiveSyncToken();
   // 合言葉が未入力なら送らない（ステップ4-3）
   if (!token) return { success: false, code: "NO_TOKEN", error: "同期の合言葉が未入力です" };
-
-  // 1. まず標準の fetch で試行
+  // 電波が無いと分かっているときは待たずに失敗にする
+  if (typeof navigator !== "undefined" && navigator.onLine === false) throw new Error("offline");
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs || 15000);
   try {
-    const params = new URLSearchParams(Object.assign({ token: token }, paramsObj, { action: action }));
-    const url = `${state.syncGasUrl}?${params.toString()}`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), opts.fetchTimeout || 6000);
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(state.syncGasUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(Object.assign({}, paramsObj || {}, { token: token, action: action })),
+      signal: controller.signal
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (data && typeof data === "object") return data;
+    throw new Error("Bad response");
+  } finally {
     clearTimeout(timeoutId);
-    if (res.ok) {
-      const data = await res.json();
-      if (data && typeof data === 'object') {
-        return data;
-      }
-    }
-  } catch (fetchErr) {
-    // fetch が CORS やリダイレクトで失敗した場合は JSONP にフォールバック
   }
+}
 
-  // 2. JSONP によるフォールバック通信
-  return new Promise((resolve, reject) => {
-    const callbackName = "gasCb_" + Date.now() + "_" + Math.floor(Math.random() * 100000);
-    const params = new URLSearchParams(Object.assign({ token: token }, paramsObj, {
-      action: action,
-      callback: callbackName
-    }));
-
-    const url = `${state.syncGasUrl}?${params.toString()}`;
-    const script = document.createElement("script");
-    script.src = url;
-
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error("GAS request timeout"));
-    }, opts.jsonpTimeout || 10000);
-
-    function cleanup() {
-      clearTimeout(timeout);
-      if (window[callbackName]) {
-        delete window[callbackName];
-      }
-      if (script.parentNode) {
-        script.parentNode.removeChild(script);
-      }
-    }
-
-    window[callbackName] = function(data) {
-      cleanup();
-      resolve(data);
-    };
-
-    script.onerror = function(err) {
-      cleanup();
-      reject(err);
-    };
-
-    document.head.appendChild(script);
-  });
+// 読み込み用（名前は以前の JSONP のころのまま。中身は POST）
+async function fetchGasJsonpRaw_(action, paramsObj = {}, opts = {}) {
+  return await postGas_(action, paramsObj, Math.max(opts.fetchTimeout || 0, opts.jsonpTimeout || 0) || 15000);
 }
 
 // ログ一意キー正規化ヘルパー（時刻表記揺れや空白による重複追加・再描画バグを防止）
@@ -4136,39 +4100,12 @@ function enqueueGasWrite(action, params) {
 }
 
 /**
- * 書き込み1件を送る（Step3.5g で順番を変更）
- *  - 短いもの：従来から iPhone で動いている GET（fetch→だめならJSONP）で送る
- *  - URLに収まらない長文だけ POST で送る（本文をURLに載せない）
- *  どちらも clientId 付きなので、途中で打ち切って再送しても二重には書かれない。
- *  （iPhone の PWA で POST の応答が返らず、1件ごとに数十秒待たされる症状があったため）
+ * 書き込み1件を送る。2026-10-09：長さによらず POST の本文で送る（合言葉を URL に載せない）
+ *  clientId 付きなので、途中で打ち切って再送しても二重には書かれない。
+ *  書き込みはロック待ち＋Drive の読み書きで時間がかかることがあるため、待ち時間は長め（30秒）
  */
 async function sendGasWrite_(action, params) {
-  const token = getEffectiveSyncToken();
-  if (!token) return { success: false, code: "NO_TOKEN", error: "同期の合言葉が未入力です" };
-  const getLen = state.syncGasUrl.length +
-    new URLSearchParams(Object.assign({ token: token }, params, { action: action, callback: "gasCb_0000000000000_00000" })).toString().length + 1;
-  if (getLen <= 6000) {
-    // 書き込みはロック待ち＋Driveの読み書きで6秒を超えることがあるため、待ち時間を長めにとる（Step3.5h）
-    // （短い待ち時間で打ち切ると、サーバーには届いているのに「通信できません」と表示され、再送が重なって更に遅くなっていた）
-    return await fetchGasJsonpRaw_(action, params, { fetchTimeout: 25000, jsonpTimeout: 30000 });
-  }
-  const body = JSON.stringify(Object.assign({}, params, { token: token, action: action }));
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000);
-  try {
-    const res = await fetch(state.syncGasUrl, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: body,
-      signal: controller.signal
-    });
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const data = await res.json();
-    if (data && typeof data === "object") return data;
-    throw new Error("Bad response");
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  return await postGas_(action, params, 30000);
 }
 
 // 送信処理は同時に1本だけ。実行中に呼ばれたら、その実行の終わりを待つ（Step3.5d）

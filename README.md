@@ -72,3 +72,8 @@ iPhoneや各種ブラウザからいつでもアクセスできる「Kinopy's Se
 
 ## 2026-10-09 Claude 再レビュー10回目の低（`app.js?v=20261009-claude9`）
 - その日のまとめの天気・睡眠は当日分だけを使う（GAS が前日の値に stale を付けて返したとき、それを「本日の気象」として AI に渡していた）。当日分が無い日は、9:30 の自動更新か手動更新まで天気・睡眠なしで話す
+
+## 2026-10-09 合言葉を URL に載せない（`app.js?v=20261009-claude10`、きのぴぃ決定）
+- 同期サーバー（gas-second-sync）へは、読み込みも書き込みも POST の本文で送る（`postGas_`。Mac 版・他のアプリと同じ形）。GET・JSONP の経路は消した（POST が失敗しても URL に載せる経路には戻らない）
+- 以前は GET（だめなら JSONP）で、同期の合言葉が URL のパラメータに載っていた（Step3.5g の「iPhone で POST の応答が遅い」への対策だった）
+- 次の段階：iPhone・Mac の Chrome・会社 PC の拡張で新しい版を開いたあと、`showSyncTokenUsage`（gas-second-sync の Code.gs）で GET・JSONP の回数が増えていないことを確かめ、gas-second-sync で URL の合言葉を断る。合言葉の入れ替えはしない（きのぴぃ決定 B）
