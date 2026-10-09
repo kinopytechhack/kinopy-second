@@ -2324,7 +2324,7 @@ function initChatTimeline() {
   } else {
     // クラウドから取得するまでのプレースホルダー（localStorageには保存しない）
     const welcome = "きのぴぃ、おつかれさま！サウナハット被っていつでもスタンバイしてるよ。今日何する？何でも話してね！";
-    elements.chatTimeline.appendChild(createMessageBubbleElement("bot", welcome, new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })));
+    elements.chatTimeline.appendChild(createMessageBubbleElement("bot", welcome, formatHm_(new Date())));
     lastBotMsg = welcome;
   }
 
@@ -2438,7 +2438,7 @@ function createDateSeparatorElement(label) {
 }
 
 function createMessageBubbleElement(role, text, timeStr) {
-  const normTime = timeStr || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const normTime = timeStr || formatHm_(new Date());
   const rowEl = document.createElement("div");
   rowEl.className = `chat-row ${role === "user" ? "user-row" : "bot-row"}`;
   rowEl.dataset.logKey = normalizeLogKey(normTime, role, text);
@@ -2576,7 +2576,7 @@ function hideThinkingIndicator() {
 function addMessageBubble(role, text, timeStr, shouldSave = true, addToHistory = true) {
   hideThinkingIndicator();
   if (!timeStr) {
-    timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    timeStr = formatHm_(new Date());
   }
   const rowEl = createMessageBubbleElement(role, text, timeStr);
   elements.chatTimeline.appendChild(rowEl);
@@ -3169,7 +3169,7 @@ function isRepeatMemoAdd_(memos, text, timeStr, ymd) {
 
 function addMemo(content) {
   content = normalizeMemoText_(content); // 2026-10-09（4回目）：GAS と同じ1行の形で持つ・送る
-  const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const timeStr = formatHm_(new Date());
   if (isRepeatMemoAdd_(state.memos, content, timeStr, getTodayYmd())) return; // 2026-10-09（5回目）
   const memo = {
     id: Date.now().toString(),
@@ -3611,7 +3611,16 @@ setInterval(checkScheduledTicker, 60 * 1000);
 // ==========================================
 // 設定保存
 // ==========================================
+// 2026-10-09（低まとめ）：設定の値をまとめて比べる形に（✕で閉じたとき、変わっていなければ保存・送信しない）
+function settingsSnapshot_() {
+  const keys = ["geminiEnabled", "geminiApiKey", "kumapyWebAppUrl", "kumapyAccessKey", "syncGasUrl", "syncToken",
+    "voiceEnabled", "voiceExternalTts", "voiceSpeaker", "voiceFallbackSpeaker", "voicePitch", "voiceRate", "voiceFallbackPitch",
+    "voiceFallbackRate", "voiceReplaceDict", "notifyUpcoming", "notifyHourly", "notifyNight", "notifyMonologue"];
+  return JSON.stringify(keys.map(k => state[k]));
+}
+
 function saveSettings(showBubble = true) {
+  const beforeSnap = settingsSnapshot_(); // 2026-10-09（低まとめ）
   state.geminiEnabled = elements.geminiApiToggle.checked;
   state.geminiApiKey = elements.geminiApiKey.value.trim();
   if (elements.kumapyWebAppUrlInput) {
@@ -3657,6 +3666,9 @@ function saveSettings(showBubble = true) {
   if (elements.voiceReplaceDict) {
     state.voiceReplaceDict = elements.voiceReplaceDict.value;
   }
+  // 2026-10-09（低まとめ）：✕で閉じて何も変えていなければ、保存の時刻を進めずクラウドにも送らない
+  // （別の端末で新しくした設定を、この端末の古い値で上書きしないため）
+  if (!showBubble && settingsSnapshot_() === beforeSnap) return;
 
   localStorage.setItem("gemini_enabled", state.geminiEnabled);
   localStorage.setItem("gemini_api_key", state.geminiApiKey);
@@ -3961,8 +3973,9 @@ async function syncFromCloud(force = false) {
   // 3. メモの同期取得＆マージ
   try {
     // 2026-10-07：当日＋過去30日のメモ（チェックしていないメモを日をまたいで残す。gas-second-sync Ver.14 の range）
+    const memoSeqAtStart = memoWriteSeq_; // 2026-10-09（低まとめ）：取りに行く間にメモの書き込みが通ったら、この一覧は古いので使わない
     const data = await fetchGasJsonp("getMemos", { date: todayYmd, range: MEMO_RANGE_DAYS });
-    if (data && data.success && Array.isArray(data.memos)) {
+    if (data && data.success && Array.isArray(data.memos) && memoWriteSeq_ === memoSeqAtStart) {
       let memoChanged = false;
       data.memos.forEach(cm => {
         // 削除を送信待ちのメモは復活させない（Step3.5f：判定は未送信キューだけで行う。
@@ -4038,6 +4051,13 @@ const OUTBOX_FAILED_KEY = "companion_outbox_failed";
 const OUTBOX_STUCK_MS = 24 * 60 * 60 * 1000; // 2026-10-07（2回目）
 let outboxMem = null;
 let outboxFlushing = false;
+let memoWriteSeq_ = 0; // 2026-10-09（低まとめ）：メモの書き込みが通るたびに進める（行き違った古いメモ一覧を使わないため）
+
+// 2026-10-09（低まとめ）：時刻は端末の設定（12時間表示など）によらず 24時間の HH:MM
+// （「03:05 PM」の形だと GAS がメモの行として読めず、保存したメモがどこにも出なかった）
+function formatHm_(d) {
+  return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
 const syncStatus = { state: "unknown", lastOkAt: null };
 
 function safeJsonParseArray_(key) {
@@ -4174,6 +4194,7 @@ async function flushOutboxInner_() {
       }
       if (res && res.success) {
         if (ob[0] === op) ob.shift(); // 2026-10-09（5回目）：送信中に破棄されて別の書き込みが先頭に来ていたら消さない
+        if (/Memo$/.test(op.action)) memoWriteSeq_++; // 2026-10-09（低まとめ）
         setSyncStatus_("ok");
         saveOutbox_();
         continue;
@@ -4252,7 +4273,7 @@ async function manageOutbox_() {
     addMessageBubble("bot", "まだ送れていないので、少し待ってからもう一度タップしてね。電波が戻れば自動でも送るよ。", null, false);
     return;
   }
-  if (window.confirm(desc + "\n\n再送できなかった分を破棄しますか？（破棄した発言はVaultに入りません）")) {
+  if (window.confirm(desc + "\n\n再送できなかった分を破棄しますか？（破棄した発言はVaultに入りません。送信中だった1件は、届いていれば Vault に入ります）")) {
     loadOutbox_().length = 0; // 2026-10-09（5回目）：同じ一覧を空にする（送信中の処理が持つ一覧からも消え、破棄した分を送らない）
     saveOutbox_();
     addMessageBubble("bot", "未送信を破棄しました。", null, false);
@@ -4272,6 +4293,11 @@ function addFailedOp_(op, reason) {
   const list = loadFailedOps_();
   list.push({ action: op.action, params: op.params, createdAt: op.createdAt, reason: String(reason || "").slice(0, 80) });
   try { localStorage.setItem(OUTBOX_FAILED_KEY, JSON.stringify(list.slice(-50))); } catch (e) {}
+}
+// 2026-10-09（低まとめ）：「確認した」で消すのは表示していた分だけ（表示のあとに増えた分は残す）
+function failedOpsAfterConfirm_(shown, current) {
+  const keys = new Set(shown.map(f => JSON.stringify(f)));
+  return current.filter(f => !keys.has(JSON.stringify(f)));
 }
 function showFailedOps_() {
   const list = loadFailedOps_();
@@ -4297,14 +4323,24 @@ function showFailedOps_() {
   copyBtn.style.cssText = "margin-left:6px;font-size:11px;";
   copyBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    try { navigator.clipboard.writeText(fullText); copyBtn.textContent = "コピーしました"; } catch (err) {}
+    // 2026-10-09（低まとめ）：コピーできたかを見てから表示する
+    try {
+      navigator.clipboard.writeText(fullText).then(
+        () => { copyBtn.textContent = "コピーしました"; },
+        () => { copyBtn.textContent = "コピーできませんでした"; }
+      );
+    } catch (err) { copyBtn.textContent = "コピーできませんでした"; }
   });
   const doneBtn = document.createElement("button");
   doneBtn.textContent = "確認した（一覧から消す）";
   doneBtn.style.cssText = "margin-left:6px;font-size:11px;";
   doneBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    try { localStorage.removeItem(OUTBOX_FAILED_KEY); } catch (err) {}
+    try {
+      const rest = failedOpsAfterConfirm_(list, loadFailedOps_()); // 2026-10-09（低まとめ）
+      if (rest.length) localStorage.setItem(OUTBOX_FAILED_KEY, JSON.stringify(rest));
+      else localStorage.removeItem(OUTBOX_FAILED_KEY);
+    } catch (err) {}
     el.remove();
     renderSyncStatus();
   });
@@ -4501,7 +4537,7 @@ function syncAppendLogToGas(role, text, timeStr) {
     role: role,
     speaker: speaker,
     text: text,
-    time: timeStr || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    time: timeStr || formatHm_(new Date())
   });
 }
 
@@ -4514,7 +4550,7 @@ function syncSaveMemoToGas(memoText, timeStr) {
   enqueueGasWrite("saveMemo", {
     date: todayYmd,
     text: memoText,
-    time: timeStr || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    time: timeStr || formatHm_(new Date())
   });
 }
 
