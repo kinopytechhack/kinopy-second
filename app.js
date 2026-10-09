@@ -3159,9 +3159,18 @@ function playChime() {
 // ==========================================
 // メモ管理
 // ==========================================
+// 2026-10-09（5回目）：同じ分に同じ本文のメモを続けて足さない（連打で Vault に同じ id の行が2つでき、画面に1件しか出なくなるため）。
+// 前に足したメモを消したあとなら、同じ本文でも足せる
+let lastMemoAdd_ = null;
+function isRepeatMemoAdd_(memos, text, timeStr, ymd) {
+  const last = lastMemoAdd_;
+  return !!(last && last.text === text && last.time === timeStr && last.ymd === ymd && memos.some(m => m.id === last.id));
+}
+
 function addMemo(content) {
   content = normalizeMemoText_(content); // 2026-10-09（4回目）：GAS と同じ1行の形で持つ・送る
   const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (isRepeatMemoAdd_(state.memos, content, timeStr, getTodayYmd())) return; // 2026-10-09（5回目）
   const memo = {
     id: Date.now().toString(),
     text: content,
@@ -3170,6 +3179,7 @@ function addMemo(content) {
     archived: false
   };
   state.memos.unshift(memo);
+  lastMemoAdd_ = { id: memo.id, text: content, time: timeStr, ymd: memo.serverDate }; // 2026-10-09（5回目）
   saveMemos();
 
   // GASクラウド同期（未送信キュー経由・Step3.5）
@@ -4163,7 +4173,7 @@ async function flushOutboxInner_() {
         break;
       }
       if (res && res.success) {
-        ob.shift();
+        if (ob[0] === op) ob.shift(); // 2026-10-09（5回目）：送信中に破棄されて別の書き込みが先頭に来ていたら消さない
         setSyncStatus_("ok");
         saveOutbox_();
         continue;
@@ -4184,7 +4194,7 @@ async function flushOutboxInner_() {
       if (res && res.code === "BAD_REQUEST" || (res && /^(Empty|Unknown action)/.test(res.error || ""))) {
         // 何度送っても通らない内容。2026-10-07：黙って捨てず「書けなかった」一覧に移して画面で知らせる
         console.error("outbox op rejected:", op.action, res.error);
-        ob.shift();
+        if (ob[0] === op) ob.shift(); // 2026-10-09（5回目）：送信中に破棄されて別の書き込みが先頭に来ていたら消さない
         addFailedOp_(op, res.error || res.code);
         saveOutbox_();
         continue;
@@ -4197,7 +4207,7 @@ async function flushOutboxInner_() {
         if (!op.firstServerErrorAt) op.firstServerErrorAt = Date.now();
         if (Date.now() - op.firstServerErrorAt > OUTBOX_STUCK_MS && (op.tries || 0) >= 5) { // 2026-10-07（3回目）：5回以上も条件に
           console.error("outbox op moved to failed after 24h:", op.action, res.error || res.code);
-          ob.shift();
+          if (ob[0] === op) ob.shift(); // 2026-10-09（5回目）：送信中に破棄されて別の書き込みが先頭に来ていたら消さない
           addFailedOp_(op, "24時間送れなかった: " + (res.error || res.code || ""));
           saveOutbox_();
           continue;
@@ -4243,7 +4253,7 @@ async function manageOutbox_() {
     return;
   }
   if (window.confirm(desc + "\n\n再送できなかった分を破棄しますか？（破棄した発言はVaultに入りません）")) {
-    outboxMem = [];
+    loadOutbox_().length = 0; // 2026-10-09（5回目）：同じ一覧を空にする（送信中の処理が持つ一覧からも消え、破棄した分を送らない）
     saveOutbox_();
     addMessageBubble("bot", "未送信を破棄しました。", null, false);
   }
