@@ -1909,7 +1909,8 @@ function getCurrentCutSrc() {
     look_far: "assets/15_look_far.png",
     one_leg: "assets/16_one_leg.png"
   };
-  if (currentCutOverride && cutMap[currentCutOverride]) {
+  // speaking 以外の特殊ポーズ（片足立ち、あくび、深呼吸等）が指定されている場合はそのポーズを維持
+  if (currentCutOverride && currentCutOverride !== "speaking" && cutMap[currentCutOverride]) {
     return cutMap[currentCutOverride];
   }
   return getBaseAvatarSrc();
@@ -1986,7 +1987,11 @@ function startLipSync(durationMs = 0, isTts = false) {
   if (currentCutOverride && currentCutOverride !== "normal" && currentCutOverride !== "speaking") {
     return;
   }
-  let open = false;
+  
+  // 発話開始時に即座に口を開いてレスポンスを高める
+  let open = true;
+  imgs.forEach(img => { img.src = "assets/02_speaking.png"; });
+
   lipSyncTimer = setInterval(() => {
     if (isTts && !state.isSpeaking) {
       stopLipSync();
@@ -2593,6 +2598,13 @@ function addMessageBubble(role, text, timeStr, shouldSave = true, addToHistory =
 
   if (role === "bot") {
     lastBotSpeechText = text;
+    if (!currentCutOverride || currentCutOverride === "normal" || currentCutOverride === "speaking") {
+      const clean = cleanTextForSpeech(text);
+      if (clean) {
+        const duration = Math.min(6000, Math.max(1600, clean.length * 80));
+        startLipSync(duration, false);
+      }
+    }
     if (!state.isPanelOpen) {
       showPwaFloatingBubble(text);
       if (window.showPwaUnreadBadge) window.showPwaUnreadBadge();
@@ -4043,6 +4055,8 @@ const OUTBOX_FAILED_KEY = "companion_outbox_failed";
 const OUTBOX_STUCK_MS = 24 * 60 * 60 * 1000; // 2026-10-07（2回目）
 let outboxMem = null;
 let outboxFlushing = false;
+// 2026-10-09（低の残り）：このタブで送り終えた・書けなかった一覧へ移した・破棄した書き込みの id（ほかのタブが保存した古い一覧から戻さないため）
+const outboxDoneIds_ = new Set();
 let memoWriteSeq_ = 0; // 2026-10-09（低まとめ）：メモの書き込みが通るたびに進める（行き違った古いメモ一覧を使わないため）
 
 // 2026-10-09（低まとめ）：時刻は端末の設定（12時間表示など）によらず 24時間の HH:MM
@@ -4093,8 +4107,30 @@ function loadOutbox_() {
   return outboxMem;
 }
 
+// 2026-10-09（低の残り）：ほかのタブが保存した未送信を、このタブの一覧に足す（id で1つに。このタブで終えた分は戻さない）。
+// 同じ書き込みが2つのタブから送られても、サーバーは clientId で二重には書かない
+function mergeOutboxFromStorage_() {
+  const mem = loadOutbox_();
+  const have = new Set(mem.map(o => o && o.id));
+  safeJsonParseArray_(OUTBOX_KEY).forEach(o => {
+    if (o && o.id && !have.has(o.id) && !outboxDoneIds_.has(o.id)) {
+      mem.push(o);
+      have.add(o.id);
+    }
+  });
+}
+if (typeof window !== "undefined" && window.addEventListener) {
+  window.addEventListener("storage", (e) => {
+    if (e && e.key === OUTBOX_KEY) {
+      mergeOutboxFromStorage_();
+      renderSyncStatus();
+    }
+  });
+}
+
 function saveOutbox_(skipRender) {
   try {
+    mergeOutboxFromStorage_(); // 2026-10-09（低の残り）：ほかのタブの分を上書きしない
     localStorage.setItem(OUTBOX_KEY, JSON.stringify(loadOutbox_()));
   } catch (e) {
     console.warn("outbox save failed:", e);
@@ -4158,7 +4194,7 @@ async function flushOutboxInner_() {
         break;
       }
       if (res && res.success) {
-        if (ob[0] === op) ob.shift(); // 2026-10-09（5回目）：送信中に破棄されて別の書き込みが先頭に来ていたら消さない
+        if (ob[0] === op) ob.shift(); outboxDoneIds_.add(op.id); // 2026-10-09（5回目）：送信中に破棄されて別の書き込みが先頭に来ていたら消さない
         if (/Memo$/.test(op.action)) memoWriteSeq_++; // 2026-10-09（低まとめ）
         setSyncStatus_("ok");
         saveOutbox_();
@@ -4180,7 +4216,7 @@ async function flushOutboxInner_() {
       if (res && res.code === "BAD_REQUEST" || (res && /^(Empty|Unknown action)/.test(res.error || ""))) {
         // 何度送っても通らない内容。2026-10-07：黙って捨てず「書けなかった」一覧に移して画面で知らせる
         console.error("outbox op rejected:", op.action, res.error);
-        if (ob[0] === op) ob.shift(); // 2026-10-09（5回目）：送信中に破棄されて別の書き込みが先頭に来ていたら消さない
+        if (ob[0] === op) ob.shift(); outboxDoneIds_.add(op.id); // 2026-10-09（5回目）：送信中に破棄されて別の書き込みが先頭に来ていたら消さない
         addFailedOp_(op, res.error || res.code);
         saveOutbox_();
         continue;
@@ -4193,7 +4229,7 @@ async function flushOutboxInner_() {
         if (!op.firstServerErrorAt) op.firstServerErrorAt = Date.now();
         if (Date.now() - op.firstServerErrorAt > OUTBOX_STUCK_MS && (op.tries || 0) >= 5) { // 2026-10-07（3回目）：5回以上も条件に
           console.error("outbox op moved to failed after 24h:", op.action, res.error || res.code);
-          if (ob[0] === op) ob.shift(); // 2026-10-09（5回目）：送信中に破棄されて別の書き込みが先頭に来ていたら消さない
+          if (ob[0] === op) ob.shift(); outboxDoneIds_.add(op.id); // 2026-10-09（5回目）：送信中に破棄されて別の書き込みが先頭に来ていたら消さない
           addFailedOp_(op, "24時間送れなかった: " + (res.error || res.code || ""));
           saveOutbox_();
           continue;
@@ -4238,7 +4274,8 @@ async function manageOutbox_() {
     addMessageBubble("bot", "まだ送れていないので、少し待ってからもう一度タップしてね。電波が戻れば自動でも送るよ。", null, false);
     return;
   }
-  if (window.confirm(desc + "\n\n再送できなかった分を破棄しますか？（破棄した発言はVaultに入りません。送信中だった1件は、届いていれば Vault に入ります）")) {
+  if (window.confirm(desc + "\n\n再送できなかった分を破棄しますか？（破棄した発言はVaultに入りません。送信中だった1件は、届いていれば Vault に入ります。この PWA をほかのタブでも開いているときは、ほかのタブを閉じてから破棄してください）")) {
+    loadOutbox_().forEach(o => outboxDoneIds_.add(o.id)); // 2026-10-09（低の残り）：ほかのタブの古い一覧から戻さない
     loadOutbox_().length = 0; // 2026-10-09（5回目）：同じ一覧を空にする（送信中の処理が持つ一覧からも消え、破棄した分を送らない）
     saveOutbox_();
     addMessageBubble("bot", "未送信を破棄しました。", null, false);
@@ -4524,10 +4561,16 @@ function syncSaveMemoToGas(memoText, timeStr) {
  */
 function syncSaveSettingsToGas(settingsObj) {
   if (!state.syncGasUrl || !settingsObj) return;
-  sendGasWrite_("saveSettings", { settings: JSON.stringify(settingsObj), clientId: newClientId_() })
+  return sendGasWrite_("saveSettings", { settings: JSON.stringify(settingsObj), clientId: newClientId_() })
     .then(res => {
       if (res && (res.code === "UNAUTHORIZED" || res.code === "NO_TOKEN")) noteReadResult_(res);
-      else if (res && res.success) console.log("☁️ Settings saved to cloud");
+      else if (res && res.success) {
+        console.log("☁️ Settings saved to cloud");
+        // 2026-10-09（低の残り）：この端末で保存した時刻は、サーバーの保存時刻にする（クラウドの updatedAt と同じ時計で比べる。端末の時計のずれで取り込み漏れが起きないように）
+        if (res.saved && res.saved.updatedAt) {
+          try { localStorage.setItem("companion_settings_local_at", String(res.saved.updatedAt)); } catch (e) {}
+        }
+      }
     })
     .catch(err => console.warn("syncSaveSettingsToGas warning:", err));
 }
