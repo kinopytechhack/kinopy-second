@@ -90,4 +90,13 @@ iPhoneや各種ブラウザからいつでもアクセスできる「Kinopy's Se
 - 記憶は localStorage `companion_memory_v1` と、同期サーバーの saveSettings で `companion_settings.json` の `companionMemory`（getSettings で読む）。端末ごとの会話数は端末ID（`companion_memory_device_id`）で分けて足し合わせる
 - 内容（Lv・節目・不在反応・朝夜の声かけ・この前の話・会話の長さ）は desktop-second の README の同じ節と同じ
 - 設定保存の返事を「設定、保存しました。」に（Matt の口調）
-- 割り切り：companionMemory を保存すると設定 JSON の `updatedAt` も進む。この端末の設定の保存がクラウドに届かないまま、ほかの端末が記憶を書くと、次の同期でこの端末の設定がクラウドの値に戻ることがある（設定の保存が失敗したときだけ）。直すなら gas-second-sync に記憶専用の口を作る
+- 割り切り：companionMemory を保存すると設定 JSON の `updatedAt` も進む。この端末の設定の保存がクラウドに届かないまま、ほかの端末が記憶を書くと、次の同期でこの端末の設定がクラウドの値に戻ることがある（設定の保存が失敗したときだけ）。直すなら gas-second-sync に記憶専用の口を作る → 2026-10-12 に作った（`saveCompanionMemory`、`updatedAt` を変えない）
+
+## 2026-10-12 細かい直し（`companion_memory.js?v=20261012-tune1`・`app.js?v=20261012-tune1`）
+- 節目・Lv アップのとき、Matt がポーズ（`happy`、8秒）を取ってから話す。Lv アップのひと言を新設（Lv2〜5、知らせた Lv は記憶の `levelShown`）
+- 音声入力の返事にも F5 の文脈（`KinopyBond.contextBlock()`）を渡す。長さは F5 に合わせ、「60字以内」は外した（きのぴぃ決定）
+- 記憶のクラウド保存を `saveCompanionMemory` へ（gas-second-sync Ver.24。サーバーがロックの中でまとめる）
+
+---
+
+**ラベル：** GeminiAPI, GitHub（Vault Viewer のツールの分類。2026-10-10 きのぴぃ決定）

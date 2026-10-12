@@ -3,11 +3,16 @@
  * （G-805、Req_2026-10-07_KinopySecond_Bond_Memory_Conversation.md、2026-10-09 新設）
  *
  * desktop-second と second-pwa に「同じ中身」で置く（違いは、各版が KinopyBond.start(env) に渡すつなぎ env だけ）。
- * 回帰試験（90_Tools/second-tests/run_tests.js）で、2つのファイルが同じ中身かを確かめている。
+ * gas-second-sync にも同じ中身を companion_memory.gs として置く（2026-10-12。サーバーの saveCompanionMemory が merge() でまとめるため。GC-10）。
+ * 回帰試験（90_Tools/second-tests/run_tests.js）で、3つのファイルが同じ中身かを確かめている。
+ *
+ * 変更履歴
+ *  2026-10-12 メインPMの申し送り：Lv アップのひと言を追加（知らせた Lv を levelShown に持つ。初めては黙って今の Lv にする）。
+ *    節目・Lv アップは env.say に cut（ポーズ）を渡す。保存は gas-second-sync の saveCompanionMemory（サーバーがロックの中でまとめる）。
  *
  * 保存先：
  *  - 端末の localStorage（companion_memory_v1）
- *  - Vault の 70_Second/companion_settings.json の companionMemory（書き込みは gas-second-sync の saveSettings だけ。書き手を1つにする）
+ *  - Vault の 70_Second/companion_settings.json の companionMemory（書き込みは gas-second-sync の saveCompanionMemory。サーバーがロックの中でまとめる）
  * 端末どうしは merge() で「大きい方を取る・端末ごとの数を足し合わせる」形にまとめる（後戻りしない）。
  *
  * このファイルは公開リポジトリ（second-pwa / GitHub Pages）にも載る。個人の情報・合言葉・キーは書かない。
@@ -36,6 +41,15 @@
     { id: 'conv500', kind: 'conv', n: 500, label: '会話通算500回', text: '会話、通算500回です。半歩横から、ちゃんと聞いてますよ。' },
     { id: 'conv1000', kind: 'conv', n: 1000, label: '会話通算1000回', text: '通算1000回。……長いつきあいになってきましたね。' }
   ];
+  // Lv アップのひと言（2026-10-12）。Lv が飛んだときは新しい Lv の文だけ出す
+  const LEVEL_UP_TEXT = {
+    2: '……なつき度、Lv2になりました。まあ、少しは慣れてきましたね。',
+    3: 'なつき度、Lv3です。……そろそろ、もう一歩踏み込んだ話をしてもいいですか。',
+    4: 'Lv4になりました。……正直、きのぴぃのくせ、だいぶ分かってきましたよ。',
+    5: 'なつき度、Lv5。……長いつきあいになりましたね。これからも半歩横にいます。'
+  };
+  // 節目・Lv アップのときのポーズ（各版の setAvatarCut の名前。2026-10-12 きのぴぃ決定：全部 happy。レアポーズは画像ができてから）
+  const CELEBRATE_CUT = 'happy';
   // 声かけ・要約に使う、Matt の口調の要点（公開してよい範囲だけ。全文の人格は各版の callGeminiApi 側）
   const MATT_BRIEF = 'あなたはきのぴぃ専属のAIセコンド「Matt」（ハシビロコウ）。冷静・率直・観察的で、少しだけユーモラス（真顔で言う）。' +
     '丁寧だけど堅くない日本語（敬語7：くだけた表現3）。呼び方は必ず「きのぴぃ」。' +
@@ -76,7 +90,8 @@
       greeted: {}, // 声かけを出した日 { morning, night, absence: 日付 }
       topics: [], // この前の話 [{ date, text }]（新しい順・最大2件）
       summarized: {}, // 要約を済ませた日 { 日付: true }（直近14日分だけ）
-      seed: null // 過去ログからの初期値（Mac 版が1回だけ入れる）{ days, conv, streak, firstLogDate, at }
+      seed: null, // 過去ログからの初期値（Mac 版が1回だけ入れる）{ days, conv, streak, firstLogDate, at }
+      levelShown: 0 // 知らせた Lv（0＝まだ決めていない。初めて決めるときは黙って今の Lv にする。2026-10-12）
     };
   }
 
@@ -88,6 +103,7 @@
     if (typeof m.lastSeenAt === 'string') o.lastSeenAt = m.lastSeenAt;
     o.streak = num(m.streak);
     o.activeDays = num(m.activeDays);
+    o.levelShown = Math.min(LEVEL_MIN.length, num(m.levelShown));
     if (m.conv && typeof m.conv === 'object') {
       Object.keys(m.conv).forEach(k => { const n = num(m.conv[k]); if (n) o.conv[String(k).slice(0, 60)] = n; });
     }
@@ -170,6 +186,7 @@
     if (a.seed || b.seed) {
       o.seed = !a.seed ? b.seed : !b.seed ? a.seed : (b.seed.conv > a.seed.conv ? b.seed : a.seed);
     }
+    o.levelShown = Math.max(a.levelShown, b.levelShown);
     return o;
   }
 
@@ -219,6 +236,21 @@
       if (v >= ms.n) return ms;
     }
     return null;
+  }
+
+  /** 知らせた Lv がまだ無ければ、今の Lv を黙って「知らせた」にする（入れた直後にまとめて出さない）。変えたら true */
+  function initLevelShown(m) {
+    if (m.levelShown) return false;
+    m.levelShown = totals(m).level;
+    return true;
+  }
+
+  /** まだ知らせていない Lv アップ（無ければ null）。知らせた Lv が決まっていないときは出さない */
+  function nextLevelUp(m) {
+    if (!m.levelShown) return null;
+    const lv = totals(m).level;
+    if (lv <= m.levelShown) return null;
+    return { level: lv, text: LEVEL_UP_TEXT[lv] || ('なつき度、Lv' + lv + 'になりました。'), cut: CELEBRATE_CUT };
   }
 
   /** 過去ログの一覧 [{date, userCount}] から初期値を作る（この仕組みを入れた日より前の分だけ） */
@@ -448,7 +480,8 @@
     try {
       const res = await B.env.cloudSave(JSON.parse(JSON.stringify(B.mem)));
       if (res && res.success) {
-        const saved = res.saved && res.saved.companionMemory;
+        // saveCompanionMemory はサーバーでまとめた記憶を companionMemory で返す（旧 saveSettings は saved.companionMemory）
+        const saved = res.companionMemory || (res.saved && res.saved.companionMemory);
         if (saved) { B.mem = merge(B.mem, saved); saveLocal(); }
       } else {
         console.warn('[Bond] クラウドに保存できませんでした:', res && (res.code || res.error));
@@ -572,15 +605,19 @@
     B.msTimer = setTimeout(checkMilestones, ms);
   }
 
+  /** 節目 → Lv アップの順に、1回に1つだけ出す（残りは少しあけて次に出す）。ポーズ（cut）を付けて話す（2026-10-12） */
   async function checkMilestones() {
     B.msTimer = null;
     if (!B.started) return;
     const ms = nextMilestone(B.mem);
-    if (!ms) return;
+    const up = ms ? null : nextLevelUp(B.mem);
+    if (!ms && !up) return;
     if (isBusy() || B.passRunning) { scheduleMilestoneCheck(15000); return; }
-    B.mem.milestones[ms.id] = B.env.today(); // 各節目1回だけ（端末をまたいで共有）
+    if (ms) B.mem.milestones[ms.id] = B.env.today(); // 各節目1回だけ（端末をまたいで共有）
+    else B.mem.levelShown = up.level; // Lv アップも1回だけ（端末をまたいで大きい方を取る）
     persist();
-    B.env.say(ms.text, { log: true });
+    B.env.say(ms ? ms.text : up.text, { log: true, cut: ms ? CELEBRATE_CUT : up.cut });
+    if (nextMilestone(B.mem) || nextLevelUp(B.mem)) scheduleMilestoneCheck(15000);
   }
 
   /** 前の日までの会話から「この前の話」を1日分だけ要約して覚える（F1） */
@@ -646,6 +683,7 @@
     B.started = true;
     await activate('start'); // 当日の利用を記録（このあと初期値・声かけ）
     await seedFromLogs();
+    if (initLevelShown(B.mem)) persist(); // 2026-10-12：今の Lv は黙って「知らせた」に（初期値を入れたあとで決める）
     if (env.getFacts) onTasks((env.getFacts() || {}).tasks);
     if (typeof root.addEventListener === 'function') {
       root.addEventListener('focus', () => activate('focus'));
@@ -683,7 +721,9 @@
     _test: {
       empty, normalize, merge, touchDay, observeTasks, totals, levelOf, nextMilestone, buildSeed, applySeed,
       absenceLine, greetingWindow, depthInstruction, contextBlock, taskFacts, factLines, fallbackGreeting,
-      parseTopics, addDays, diffDays, logicalYmd, LEVEL_MIN, POINT, MILESTONES, ABSENCE_MIN_DAYS
+      parseTopics, addDays, diffDays, logicalYmd, LEVEL_MIN, POINT, MILESTONES, ABSENCE_MIN_DAYS,
+      initLevelShown, nextLevelUp, LEVEL_UP_TEXT, CELEBRATE_CUT,
+      memRef: () => B.mem, checkMilestonesNow: () => checkMilestones()
     }
   };
   root.KinopyBond = api;

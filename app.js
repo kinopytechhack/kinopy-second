@@ -95,7 +95,7 @@ const state = {
   voiceRate: parseFloat(localStorage.getItem("voice_rate") || "1.0"),
   voiceFallbackPitch: parseFloat(localStorage.getItem("voice_fallback_pitch") || "1.0"),
   voiceFallbackRate: parseFloat(localStorage.getItem("voice_fallback_rate") || "1.0"),
-  voiceReplaceDict: localStorage.getItem("voice_replace_dict") || "",
+  voiceReplaceDict: localStorage.getItem("voice_replace_dict") || "身体:からだ",
   memos: safeJsonParseArray_("companion_memos"),
   todayWeather: null,
   todaySleep: null,
@@ -407,6 +407,7 @@ document.addEventListener("DOMContentLoaded", () => {
       isBusy: () => Boolean((elements.userInput && elements.userInput.value.trim()) || document.getElementById("pwa-live-typing-indicator")),
       say: (text, opt) => {
         const log = !(opt && opt.log === false);
+        if (opt && opt.cut) setAvatarCut(opt.cut, 8000); // 2026-10-12：節目・Lv アップのポーズ（話しているあいだも口パクで上書きしない）
         addMessageBubble("bot", text, null, log, log);
         speak(text);
       },
@@ -418,7 +419,8 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!r || !r.success) return undefined; // 読めなかった
         return (r.settings && r.settings.companionMemory) || null;
       },
-      cloudSave: (mem) => sendGasWrite_("saveSettings", { settings: JSON.stringify({ companionMemory: mem }), clientId: newClientId_() }),
+      // 2026-10-12：記憶専用の保存口（gas-second-sync Ver.24。サーバーがロックの中で今ある記憶とまとめる）
+      cloudSave: (mem) => sendGasWrite_("saveCompanionMemory", { memory: JSON.stringify(mem), clientId: newClientId_() }),
       fetchLogs: async (ymd) => {
         const r = await fetchGasJsonpRaw_("getLogs", { date: ymd }, { fetchTimeout: 20000 });
         if (!r || !r.success) throw new Error((r && (r.code || r.error)) || "getLogs failed");
@@ -621,7 +623,7 @@ function loadSettingsToUI() {
   state.voiceRate = parseFloat(localStorage.getItem("voice_rate") || "1.0");
   state.voiceFallbackPitch = parseFloat(localStorage.getItem("voice_fallback_pitch") || "1.0");
   state.voiceFallbackRate = parseFloat(localStorage.getItem("voice_fallback_rate") || "1.0");
-  state.voiceReplaceDict = localStorage.getItem("voice_replace_dict") || "";
+  state.voiceReplaceDict = localStorage.getItem("voice_replace_dict") || "身体:からだ";
 
   if (elements.geminiApiToggle) elements.geminiApiToggle.checked = state.geminiEnabled;
   if (elements.geminiApiKey) elements.geminiApiKey.value = state.geminiApiKey;
@@ -1430,14 +1432,17 @@ async function processRecordedAudio(audioBlob, mimeType) {
           const endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
           const audioCtrl = new AbortController();
           const audioTimer = setTimeout(() => audioCtrl.abort(), 30000);
+          // 2026-10-12：文字の会話と同じ文脈（会話の長さと掘り下げ・なつき度・この前の話＝F5）を渡す。長さは F5 に合わせる（きのぴぃ決定）
+          const bondContext = window.KinopyBond ? window.KinopyBond.contextBlock() : "";
 
           const prompt = `ユーザー（きのぴぃ）からの音声録音メッセージです。
 以下の手順で処理してください：
 1. 音声からユーザーが発言した言葉を正確に文字起こししてください (userText)。無音や聞き取れない場合は「（聞き取れませんでした）」としてください。
-2. その発言に対し、きのぴぃ専属のAIセコンド「Matt」（ハシビロコウ・半歩横に）として1〜2文（60文字以内）で返答してください (replyText)。
+2. その発言に対し、きのぴぃ専属のAIセコンド「Matt」（ハシビロコウ・半歩横に）として返答してください (replyText)。長さと掘り下げ方は、下の【会話の長さと掘り下げ】に従ってください（無ければ1〜2文）。
    - 呼び方：必ず「きのぴぃ」（さん付け不要）
    - トーン：丁寧だけど堅くない（敬語7：くだけた表現3）
-   - スタンス：冷静・率直・真顔ユーモア。おべっかや過剰な肯定はせず、必要なら率直に意見を伝え、休むべき時はタオルを投げる。`;
+   - スタンス：冷静・率直・真顔ユーモア。おべっかや過剰な肯定はせず、必要なら率直に意見を伝え、休むべき時はタオルを投げる。
+${bondContext}`;
 
           const payload = {
             contents: [{
@@ -3910,6 +3915,25 @@ async function syncFromCloud(force = false) {
         if (s.voiceRate !== undefined && s.voiceRate !== state.voiceRate) {
           state.voiceRate = parseFloat(s.voiceRate);
           localStorage.setItem("voice_rate", state.voiceRate);
+        }
+        if (s.voiceFallbackSpeaker !== undefined && s.voiceFallbackSpeaker !== state.voiceFallbackSpeaker) {
+          state.voiceFallbackSpeaker = s.voiceFallbackSpeaker;
+          localStorage.setItem("voice_fallback_speaker", state.voiceFallbackSpeaker);
+        }
+        if (s.voiceFallbackPitch !== undefined && s.voiceFallbackPitch !== state.voiceFallbackPitch) {
+          state.voiceFallbackPitch = parseFloat(s.voiceFallbackPitch);
+          localStorage.setItem("voice_fallback_pitch", state.voiceFallbackPitch);
+        }
+        if (s.voiceFallbackRate !== undefined && s.voiceFallbackRate !== state.voiceFallbackRate) {
+          state.voiceFallbackRate = parseFloat(s.voiceFallbackRate);
+          localStorage.setItem("voice_fallback_rate", state.voiceFallbackRate);
+        }
+        if (s.voiceReplaceDict) {
+          state.voiceReplaceDict = String(s.voiceReplaceDict);
+          localStorage.setItem("voice_replace_dict", state.voiceReplaceDict);
+        } else if (!state.voiceReplaceDict) {
+          state.voiceReplaceDict = localStorage.getItem("voice_replace_dict") || '身体:からだ';
+          localStorage.setItem("voice_replace_dict", state.voiceReplaceDict);
         }
         localStorage.setItem("companion_settings_local_at", cloudAt);
         loadSettingsToUI();
