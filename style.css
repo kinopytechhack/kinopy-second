@@ -532,6 +532,26 @@ body {
   text-overflow: ellipsis;
 }
 
+/* G-924（2026-10-16）：完了/総数の印（Kumapy の今日の集計）。古い・集計なしは色を落とす */
+.kumapy-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: #4f46e5;
+  background: rgba(99, 102, 241, 0.1);
+  border-radius: 999px;
+  padding: 1px 7px;
+  line-height: 1.5;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.kumapy-count:empty { display: none; }
+.kumapy-count.stale { color: #b45309; background: rgba(217, 119, 6, 0.12); }
+@media (prefers-color-scheme: dark) {
+  .kumapy-count { color: #c7d2fe; background: rgba(129, 140, 248, 0.18); }
+  .kumapy-count.stale { color: #fcd34d; background: rgba(251, 191, 36, 0.15); }
+}
+
 .kumapy-refresh-btn {
   background: none;
   border: none;

@@ -237,6 +237,7 @@ const elements = {
   kumapyStatusBar: document.getElementById("kumapy-status-bar"),
   kumapyText: document.getElementById("kumapy-text"),
   kumapyIcon: document.getElementById("kumapy-icon"),
+  kumapyCount: document.getElementById("kumapy-count"), // G-924：完了/総数の印
   btnKumapyRefresh: document.getElementById("btn-kumapy-refresh"),
   geminiApiToggle: document.getElementById("gemini-api-toggle"),
   geminiApiKey: document.getElementById("gemini-api-key"),
@@ -348,6 +349,12 @@ function kumapyCountText_(v) {
   if (v.ageMin === null) text += '（書いた時刻が読めません）';
   else if (v.ageMin >= 1) text += `（${v.ageMin}分前の数字${v.stale ? '・古いかもしれません' : ''}）`;
   return text;
+}
+
+/** Kumapy の行の右端に出す短い印（完了/総数。古ければ ⏱。集計が無ければ「—」）。Mac の透明ウィンドウではツールチップが出ないため（2026-10-16 きのぴぃ決定） */
+function kumapyBadgeText_(v) {
+  if (!v || !v.ok) return '—';
+  return `${v.done}/${v.total}${v.stale ? ' ⏱' : ''}`;
 }
 
 /** 帰属日（朝6時区切り）の中での分。0〜6時は翌日の早朝として後ろに並べる（23:55 の次が 00:00 になるように） */
@@ -3511,6 +3518,7 @@ async function fetchKumapyTasksCore_() {
     const nextTargetType = pick.type;
 
     const countLine = kumapyCountText_(sv);
+    if (elements.kumapyCount) { elements.kumapyCount.textContent = kumapyBadgeText_(sv); elements.kumapyCount.classList.toggle("stale", !sv.ok || sv.stale); }
     const staleMark = sv.ok && sv.stale ? " ⏱" : ""; // 25分を超えた古い数字の目印
     const tip = (head) => `${head}\nKumapy：${countLine}${sv.ok && sv.writtenHm ? `\n集計を書いた時刻：${sv.writtenHm}` : ""}`;
     const setBar = (icon, text, title) => {

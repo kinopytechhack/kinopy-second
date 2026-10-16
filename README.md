@@ -101,7 +101,8 @@ iPhoneや各種ブラウザからいつでもアクセスできる「Kinopy's Se
 - 総数・完了・未完了・本日残り（＝未完了）は、`getKumapyTasks` が返す `summary`（Kumapy の TodaySummary タブ。gas-second-sync Ver.25）から出す。以前は状態行（操作したタスクだけ）を数えていた
 - 「次の予定」は集計の未完了（G 列）から、読んだ時刻で選ぶ（終日・前日欄・実行中と、状態行で終わったものは除く。0〜6時は帰属日の後ろに並べる）
 - ツールチップに「◯分前の数字」「集計を書いた時刻」。25分を超えたら ⏱。帰属日が今日でなければ「今日の集計がまだありません」
-- 進行中は今までどおり状態行（集計より新しい）。関数 `kumapySummaryView_`・`kumapyCountText_`・`kumapyLogicalMin_`・`kumapyPickNextTask_` は desktop-second と同じ中身
+- 進行中は今までどおり状態行（集計より新しい）。関数 `kumapySummaryView_`・`kumapyCountText_`・`kumapyLogicalMin_`・`kumapyPickNextTask_`・`kumapyBadgeText_` は desktop-second と同じ中身
+- 同じ日の追加（`style.css?v=20261016-g924b`・`app.js?v=20261016-g924b`）：Kumapy の行の右端（↻ の左）に「完了/総数」の印（例 `41/116`）。古い（25分超）と `41/116 ⏱`、集計が無いと `—`（色を落とす）。Mac の透明ウィンドウではツールチップが出ないため（きのぴぃ決定）
 
 ---
 
