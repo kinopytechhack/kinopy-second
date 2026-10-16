@@ -319,6 +319,75 @@ function getLogicalDate(date = new Date()) {
   return { dateObj: d, yyyy, mm, dd, ymd };
 }
 
+// ===== G-924 段2（2026-10-16）：Kumapy の今日の集計（TodaySummary タブ）を表示に使う形にする =====
+// desktop-second/renderer.js と second-pwa/app.js に同じ中身を置く（second-tests で一致を確かめる。GC-10）。
+// 総数・完了・未完了・本日残りは Kumapy のヘッダーと同じ数字（本日残り＝未完了。きのぴぃ決定）。古さは書いた時刻（H 列）から、読んだ時刻で出す。
+function kumapySummaryView_(s, todayYmd, nowMs, summaryError) {
+  const STALE_MIN = 25; // 画面が隠れていても見張り（10分ごと）で最大およそ20分。25分を超えたら目印を付ける（きのぴぃ決定）
+  if (summaryError) return { ok: false, reason: 'error' };
+  if (!s || typeof s !== 'object') return { ok: false, reason: 'none' };
+  if (s.ymd !== todayYmd) return { ok: false, reason: 'otherday', ymd: String(s.ymd || '') };
+  const n = (v) => (typeof v === 'number' && isFinite(v) && v >= 0) ? Math.floor(v) : 0;
+  const w = String(s.writtenAt || '');
+  const t = Date.parse(w);
+  const ageMin = isFinite(t) ? Math.max(0, Math.floor((nowMs - t) / 60000)) : null;
+  const hm = /T(\d{2}:\d{2})/.exec(w);
+  return {
+    ok: true, total: n(s.total), done: n(s.done), remaining: n(s.remaining),
+    pending: Array.isArray(s.pending) ? s.pending : [],
+    ageMin: ageMin, stale: ageMin === null || ageMin > STALE_MIN, writtenHm: hm ? hm[1] : ''
+  };
+}
+
+/** 件数の1行（チャットの返事・AI の文脈・ツールチップで使う） */
+function kumapyCountText_(v) {
+  if (!v || !v.ok) {
+    return (v && v.reason === 'error') ? 'Kumapy の今日の集計を読めませんでした' : '今日の集計がまだありません（Kumapy を開くと出ます）';
+  }
+  let text = `総数${v.total}件・完了${v.done}件・未完了${v.remaining}件`;
+  if (v.ageMin === null) text += '（書いた時刻が読めません）';
+  else if (v.ageMin >= 1) text += `（${v.ageMin}分前の数字${v.stale ? '・古いかもしれません' : ''}）`;
+  return text;
+}
+
+/** 帰属日（朝6時区切り）の中での分。0〜6時は翌日の早朝として後ろに並べる（23:55 の次が 00:00 になるように） */
+function kumapyLogicalMin_(hm) {
+  const m = /^(\d{1,2}):(\d{2})/.exec(String(hm || ''));
+  if (!m) return null;
+  let v = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  if (v < 360) v += 1440;
+  return v;
+}
+
+/**
+ * 次の予定を選ぶ：予定時間内のもの（開始が遅いもの優先）→ なければ今より後に始まるもの（早いもの優先）。
+ * 終日・前日欄・実行中は除く。集計が古くても、状態行（新しい）で完了・中止などになったものは外す。
+ * open は終わっていない未完了の一覧（「他N件」の先頭に使う）
+ */
+function kumapyPickNextTask_(pending, stateTasks, nowHm) {
+  const closedSt = ['完了', '中止', '不要', '翌日移動'];
+  const closed = {};
+  (stateTasks || []).forEach((t) => { if (t && t.taskId && closedSt.indexOf(t.status) >= 0) closed[t.taskId] = true; });
+  const open = (pending || []).filter((t) => t && closedSt.indexOf(t.status) < 0 && !closed[t.taskId]);
+  const now = kumapyLogicalMin_(nowHm);
+  const st = (t) => kumapyLogicalMin_(t.planStartHm);
+  const en = (t) => { const e = kumapyLogicalMin_(t.planEndHm); return e === null ? null : (e < st(t) ? e + 1440 : e); };
+  const timed = open.filter((t) => !t.allDay && t.section !== '前日' && t.status !== '実行中' && st(t) !== null);
+  if (now === null) return { task: null, type: '', open: open };
+  const inWin = timed.filter((t) => { const e = en(t); return st(t) <= now && (e === null || e > now); }).sort((a, b) => st(b) - st(a));
+  if (inWin.length) return { task: inWin[0], type: 'in_window', open: open };
+  const after = timed.filter((t) => st(t) > now).sort((a, b) => st(a) - st(b));
+  if (after.length) return { task: after[0], type: 'upcoming', open: open };
+  return { task: null, type: '', open: open };
+}
+
+/** 最後に受け取った今日の集計を、今の時刻で見る形にする（チャットの返事・AI の文脈・声かけ用。G-924 段2） */
+function currentKumapySummary_() {
+  const r = state.kumapySummaryRaw;
+  if (!r) return null;
+  return kumapySummaryView_(r.summary, getTodayYmd(), Date.now(), r.summaryError);
+}
+
 function getTodayYmd(date = new Date()) {
   return getLogicalDate(date).ymd;
 }
@@ -412,7 +481,7 @@ document.addEventListener("DOMContentLoaded", () => {
         speak(text);
       },
       notifyFallback: (text) => showAiFallbackNotice_(text),
-      getFacts: () => ({ weather: state.todayWeather, sleep: state.todaySleep, tasks: state.todayAllTasks }),
+      getFacts: () => ({ weather: state.todayWeather, sleep: state.todaySleep, tasks: state.todayAllTasks, taskSummary: currentKumapySummary_() }), // G-924：件数は集計から
       ensureContext: () => Promise.allSettled([fetchKumapyTasks(), fetchDailyContext()]),
       cloudLoad: async () => {
         const r = await fetchGasJsonpRaw_("getSettings", {}, { fetchTimeout: 15000 });
@@ -2729,20 +2798,16 @@ async function handleUserSend() {
 }
 
 function getPwaDailySummary() {
-  const tasks = state.todayAllTasks || [];
-  let doneTasks = 0, excludedTasks = 0;
-  tasks.forEach(t => {
-    if (t.status === '翌日移動') { excludedTasks++; return; }
-    if (t.isDone || t.status === '完了') doneTasks++;
-    else if (t.status === '中止' || t.status === '不要') excludedTasks++;
-  });
-  const totalTasks = Math.max(0, tasks.length - excludedTasks);
-  const remainingTasks = Math.max(0, totalTasks - doneTasks);
-  const running = tasks.find(t => t.status === '実行中');
+  // 2026-10-16（G-924 段2）：件数は Kumapy の今日の集計（ヘッダーと同じ数字）。集計が無ければ null（件数を作らない）
+  const sv = currentKumapySummary_();
+  const hasTaskCounts = !!(sv && sv.ok);
+  const running = (state.todayAllTasks || []).find(t => t.status === '実行中');
   return {
-    totalTasks,
-    doneTasks,
-    remainingTasks,
+    hasTaskCounts,
+    taskCountText: kumapyCountText_(sv),
+    totalTasks: hasTaskCounts ? sv.total : null,
+    doneTasks: hasTaskCounts ? sv.done : null,
+    remainingTasks: hasTaskCounts ? sv.remaining : null,
     currentTaskTitle: running ? running.title : null
   };
 }
@@ -2754,9 +2819,7 @@ async function callGeminiApi(userPrompt) {
   }));
 
   const summary = getPwaDailySummary();
-  const taskLine = (state.todayAllTasks && state.todayAllTasks.length > 0) ?
-    `\n- Kumapyタスク: 総数${summary.totalTasks}件・完了${summary.doneTasks}件・未完了${summary.remainingTasks}件${summary.currentTaskTitle ? `（現在「${summary.currentTaskTitle}」を計測中）` : ''}` :
-    '';
+  const taskLine = `\n- Kumapyタスク: ${summary.taskCountText}${summary.currentTaskTitle ? `（現在「${summary.currentTaskTitle}」を計測中）` : ''}`; // G-924 段2
   const weatherLine = state.todayWeather ? 
     `\n- 本日の気象 (${state.todayWeather.location}): ${state.todayWeather.weather} (最高 ${state.todayWeather.maxTemp}℃ / 最低 ${state.todayWeather.minTemp}℃, 降水 ${state.todayWeather.precipitation}mm)` : 
     '';
@@ -2943,7 +3006,7 @@ function handleBuiltinResponse(text, failReason) {
     reply = `おはようございます、きのぴぃ。${noteStr}今日もいいコンディションでいきましょう。`;
   } else if (/進捗|状況|今日.*どう|サマリ|タスク.*何|予定|スケジュール|いま何|次.*何/.test(text)) {
     const summary = getPwaDailySummary();
-    reply = `今日のタスクは総数${summary.totalTasks}件・完了${summary.doneTasks}件・未完了${summary.remainingTasks}件ですよ！`;
+    reply = summary.hasTaskCounts ? `今日のタスクは${summary.taskCountText}ですよ！` : `Kumapy のタスク：${summary.taskCountText}。`; // G-924 段2
     if (summary.currentTaskTitle) {
       reply += `\n現在は「${summary.currentTaskTitle}」を計測中ですね。`;
     }
@@ -3438,79 +3501,43 @@ async function fetchKumapyTasksCore_() {
 
     const running = tasks.find(t => t.status === "実行中");
 
-    const activeTasks = tasks.filter(t => {
-      if (t.status === "完了" || t.status === "中止" || t.status === "不要" || t.status === "翌日移動" || t.allDay) return false;
-      return true;
-    });
+    // 2026-10-16（G-924 段2）：件数・本日残り・次の予定は Kumapy の今日の集計（TodaySummary）から（Kumapy のヘッダーと同じ数字）。
+    // 以前は状態行（操作したタスクだけ）を数えていて、Kumapy の 116 件に対して 10 件と出ていた。進行中は上の状態行のまま（集計より新しい）
+    state.kumapySummaryRaw = { summary: res.summary || null, summaryError: res.summaryError || "" }; // 古さは使うときに計り直す
+    const sv = kumapySummaryView_(res.summary, ymd, Date.now(), res.summaryError);
+    // 次の予定：集計の未完了（G 列）から、読んだ時刻で選ぶ。集計が無いときだけ状態行から選ぶ
+    const pick = kumapyPickNextTask_(sv.ok ? sv.pending : tasks, tasks, nowHm);
+    const nextTargetTask = pick.task;
+    const nextTargetType = pick.type;
 
-    const inCurrentWindow = activeTasks.filter(t => {
-      if (!t.planStartHm) return false;
-      if (t.planEndHm) {
-        return t.planStartHm <= nowHm && t.planEndHm > nowHm;
-      }
-      return t.planStartHm <= nowHm;
-    }).sort((a, b) => (b.planStartHm || "").localeCompare(a.planStartHm || ""));
-
-    const upcomingAfterNow = activeTasks.filter(t => {
-      if (!t.planStartHm) return false;
-      return t.planStartHm > nowHm;
-    }).sort((a, b) => a.planStartHm.localeCompare(b.planStartHm));
-
-    let nextTargetTask = null;
-    let nextTargetType = "";
-
-    if (inCurrentWindow.length > 0) {
-      nextTargetTask = inCurrentWindow[0];
-      nextTargetType = "in_window";
-    } else if (upcomingAfterNow.length > 0) {
-      nextTargetTask = upcomingAfterNow[0];
-      nextTargetType = "upcoming";
-    }
-
-    const remaining = activeTasks;
-
-    if (running) {
-      const text = `${running.title} (${running.actStartHm || "実行中"}〜)`;
-      const title = `【進行中タスク】${running.title}\n開始: ${running.actStartHm || ""}`;
-      if (elements.kumapyIcon) renderPwaTaskIcon(elements.kumapyIcon, "▶️");
-      elements.kumapyText.textContent = text;
-      elements.kumapyStatusBar.title = title;
-      updatePwaCharacterTaskBar("▶️", text, title);
-    } else if (nextTargetTask) {
-      const timeLabel = nextTargetTask.planEndHm ? `${nextTargetTask.planStartHm}-${nextTargetTask.planEndHm}` : `${nextTargetTask.planStartHm}〜`;
-      const isWindow = nextTargetType === "in_window";
-      const icon = isWindow ? "📍" : "⏳";
-      const countSuffix = remaining.length > 1 ? ` (残${remaining.length}件)` : "";
-      const text = `${nextTargetTask.planStartHm} ${nextTargetTask.title}${countSuffix}`;
-      const title = `【${isWindow ? "予定時間内" : "次の予定"}】${timeLabel} ${nextTargetTask.title}\n本日残りタスク: ${remaining.length}件`;
+    const countLine = kumapyCountText_(sv);
+    const staleMark = sv.ok && sv.stale ? " ⏱" : ""; // 25分を超えた古い数字の目印
+    const tip = (head) => `${head}\nKumapy：${countLine}${sv.ok && sv.writtenHm ? `\n集計を書いた時刻：${sv.writtenHm}` : ""}`;
+    const setBar = (icon, text, title) => {
       if (elements.kumapyIcon) renderPwaTaskIcon(elements.kumapyIcon, icon);
       elements.kumapyText.textContent = text;
       elements.kumapyStatusBar.title = title;
       updatePwaCharacterTaskBar(icon, text, title);
+    };
+
+    if (running) {
+      setBar("▶️", `${running.title} (${running.actStartHm || "実行中"}〜)`, tip(`【進行中タスク】${running.title}\n開始: ${running.actStartHm || ""}`));
+    } else if (nextTargetTask) {
+      const timeLabel = nextTargetTask.planEndHm ? `${nextTargetTask.planStartHm}-${nextTargetTask.planEndHm}` : `${nextTargetTask.planStartHm}〜`;
+      const isWindow = nextTargetType === "in_window";
+      const suffix = !sv.ok ? "（今日の集計なし）" : (sv.remaining > 0 ? ` (残${sv.remaining}件)` : "");
+      setBar(isWindow ? "📍" : "⏳", `${nextTargetTask.planStartHm} ${nextTargetTask.title}${suffix}${staleMark}`,
+        tip(`【${isWindow ? "予定時間内" : "次の予定"}】${timeLabel} ${nextTargetTask.title}\n本日残り: ${sv.ok ? sv.remaining + "件" : "—"}`));
+    } else if (!sv.ok) {
+      setBar("📋", sv.reason === "error" ? "Kumapy の集計を読めません" : "今日の集計がまだありません", tip("Kumapy の今日の集計"));
+    } else if (sv.remaining > 0) {
+      const first = pick.open[0];
+      const text = first ? `${first.title}${sv.remaining > 1 ? ` 他${sv.remaining - 1}件` : ""}` : `未完了 ${sv.remaining}件`;
+      setBar("📋", text + staleMark, tip(`本日残り: ${sv.remaining}件`));
+    } else if (sv.total > 0) {
+      setBar("🎉", "本日のタスク完了！" + staleMark, tip("すべての予定・タスクが完了しています"));
     } else {
-      if (remaining.length > 0) {
-        const countSuffix = remaining.length > 1 ? ` 他${remaining.length - 1}件` : "";
-        const text = `${remaining[0].title}${countSuffix}`;
-        const title = `本日残りタスク: ${remaining.length}件`;
-        if (elements.kumapyIcon) renderPwaTaskIcon(elements.kumapyIcon, "📋");
-        elements.kumapyText.textContent = text;
-        elements.kumapyStatusBar.title = title;
-        updatePwaCharacterTaskBar("📋", text, title);
-      } else if (tasks.length > 0) {
-        const text = "本日のタスク完了！";
-        const title = "すべての予定・タスクが完了しています";
-        if (elements.kumapyIcon) renderPwaTaskIcon(elements.kumapyIcon, "🎉");
-        elements.kumapyText.textContent = text;
-        elements.kumapyStatusBar.title = title;
-        updatePwaCharacterTaskBar("🎉", text, title);
-      } else {
-        const text = "本日の予定・タスクはありません";
-        const title = "本日予定されているタスクはありません";
-        if (elements.kumapyIcon) renderPwaTaskIcon(elements.kumapyIcon, "📅");
-        elements.kumapyText.textContent = text;
-        elements.kumapyStatusBar.title = title;
-        updatePwaCharacterTaskBar("📅", text, title);
-      }
+      setBar("📅", "本日の予定・タスクはありません" + staleMark, tip("本日予定されているタスクはありません"));
     }
   } catch (err) {
     console.warn("fetchKumapyTasks error:", err);

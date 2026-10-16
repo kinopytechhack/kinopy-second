@@ -7,6 +7,7 @@
  * 回帰試験（90_Tools/second-tests/run_tests.js）で、3つのファイルが同じ中身かを確かめている。
  *
  * 変更履歴
+ *  2026-10-16 G-924 段2：taskFacts に summary（Kumapy の今日の集計）を渡せるようにした。声かけの件数・残りの例を Kumapy のヘッダーと同じ数字に。
  *  2026-10-12 メインPMの申し送り：Lv アップのひと言を追加（知らせた Lv を levelShown に持つ。初めては黙って今の Lv にする）。
  *    節目・Lv アップは env.say に cut（ポーズ）を渡す。保存は gas-second-sync の saveCompanionMemory（サーバーがロックの中でまとめる）。
  *
@@ -339,7 +340,9 @@
   }
 
   // ===== タスク・天気・睡眠の事実（声かけ用） =====
-  function taskFacts(tasks) {
+  // 2026-10-16（G-924 段2）：summary（Second の kumapySummaryView_ の形、ok:true）が来たら、件数と残りの例は
+  // Kumapy の今日の集計（ヘッダーと同じ数字）を使う。来なければ今までどおり tasks（状態行）から数える。なつき度の完了数（onTasks）は tasks のまま
+  function taskFacts(tasks, summary) {
     const list = Array.isArray(tasks) ? tasks : [];
     let done = 0, excluded = 0;
     const doneTitles = [], remainTitles = [];
@@ -349,13 +352,18 @@
       if (t.isDone || t.status === '完了') { done++; if (t.title) doneTitles.push(String(t.title)); }
       else if (t.title) remainTitles.push(String(t.title));
     });
+    if (summary && summary.ok) {
+      const n = (v) => (typeof v === 'number' && isFinite(v) && v >= 0) ? Math.floor(v) : 0;
+      const pend = (Array.isArray(summary.pending) ? summary.pending : []).filter((t) => t && t.title && t.status !== '実行中').map((t) => String(t.title));
+      return { total: n(summary.total), done: n(summary.done), remaining: n(summary.remaining), doneTitles, remainTitles: pend };
+    }
     const total = Math.max(0, list.length - excluded);
     return { total, done, remaining: Math.max(0, total - done), doneTitles, remainTitles };
   }
 
   function factLines(win, facts) {
     const out = [];
-    const w = facts.weather, s = facts.sleep, tf = taskFacts(facts.tasks);
+    const w = facts.weather, s = facts.sleep, tf = taskFacts(facts.tasks, facts.taskSummary);
     if (w && w.weather) out.push('- 天気：' + w.weather + (w.maxTemp !== undefined && w.maxTemp !== '' ? '（最高' + w.maxTemp + '℃' + (w.minTemp !== undefined && w.minTemp !== '' ? '／最低' + w.minTemp + '℃' : '') + '）' : '') + (w.precipitation ? '、降水' + w.precipitation + 'mm' : ''));
     if (s && s.durationText) out.push('- 昨夜の睡眠：' + s.durationText + (s.score ? '（スコア' + s.score + '点）' : ''));
     if (win === 'morning') {
@@ -367,7 +375,7 @@
   }
 
   function fallbackGreeting(win, facts) {
-    const w = facts.weather, s = facts.sleep, tf = taskFacts(facts.tasks);
+    const w = facts.weather, s = facts.sleep, tf = taskFacts(facts.tasks, facts.taskSummary);
     if (win === 'morning') {
       let t = 'おはようございます、きのぴぃ。';
       if (w && w.weather) t += '今日は' + w.weather + (w.maxTemp !== undefined && w.maxTemp !== '' ? '、最高' + w.maxTemp + '℃' : '') + '。';

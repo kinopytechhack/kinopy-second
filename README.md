@@ -97,6 +97,12 @@ iPhoneや各種ブラウザからいつでもアクセスできる「Kinopy's Se
 - 音声入力の返事にも F5 の文脈（`KinopyBond.contextBlock()`）を渡す。長さは F5 に合わせ、「60字以内」は外した（きのぴぃ決定）
 - 記憶のクラウド保存を `saveCompanionMemory` へ（gas-second-sync Ver.24。サーバーがロックの中でまとめる）
 
+## 2026-10-16 Kumapy のタスク件数を Kumapy と同じ数字に（G-924 段2、`companion_memory.js?v=20261016-g924`・`app.js?v=20261016-g924`）
+- 総数・完了・未完了・本日残り（＝未完了）は、`getKumapyTasks` が返す `summary`（Kumapy の TodaySummary タブ。gas-second-sync Ver.25）から出す。以前は状態行（操作したタスクだけ）を数えていた
+- 「次の予定」は集計の未完了（G 列）から、読んだ時刻で選ぶ（終日・前日欄・実行中と、状態行で終わったものは除く。0〜6時は帰属日の後ろに並べる）
+- ツールチップに「◯分前の数字」「集計を書いた時刻」。25分を超えたら ⏱。帰属日が今日でなければ「今日の集計がまだありません」
+- 進行中は今までどおり状態行（集計より新しい）。関数 `kumapySummaryView_`・`kumapyCountText_`・`kumapyLogicalMin_`・`kumapyPickNextTask_` は desktop-second と同じ中身
+
 ---
 
 **ラベル：** GeminiAPI, GitHub（Vault Viewer のツールの分類。2026-10-10 きのぴぃ決定）
